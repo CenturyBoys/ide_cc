@@ -39,7 +39,23 @@ const now = () => Number(process.hrtime.bigint() / 1000n) / 1000; // ms, float
 const SERVERS = {
   vtsls: { cmd: join(__dirname, 'node_modules/.bin/vtsls'), args: ['--stdio'] },
   tsgo: { cmd: join(__dirname, 'node_modules/.bin/tsgo'), args: ['--lsp', '-stdio'] },
+  basedpyright: { cmd: join(__dirname, 'node_modules/.bin/basedpyright-langserver'), args: ['--stdio'] },
+  dart: { cmd: 'dart', args: ['language-server'] },
+  'rust-analyzer': { cmd: `${process.env.HOME}/.cargo/bin/rust-analyzer`, args: [] },
+  'csharp-ls': { cmd: `${process.env.HOME}/.dotnet/tools/csharp-ls`, args: [] },
 };
+
+// languageId do LSP a partir da extensão (o harness é multi-linguagem agora)
+function langId(file) {
+  if (file.endsWith('.py')) return 'python';
+  if (file.endsWith('.dart')) return 'dart';
+  if (file.endsWith('.rs')) return 'rust';
+  if (file.endsWith('.cs')) return 'csharp';
+  if (file.endsWith('.tsx')) return 'typescriptreact';
+  if (file.endsWith('.jsx')) return 'javascriptreact';
+  if (file.endsWith('.js') || file.endsWith('.mjs')) return 'javascript';
+  return 'typescript';
+}
 const spec = SERVERS[SERVER];
 if (!spec) { console.error(`server desconhecido: ${SERVER}`); process.exit(1); }
 
@@ -99,7 +115,7 @@ async function initialize() {
 function openDoc(absFile) {
   const text = readFileSync(absFile, 'utf8');
   conn.sendNotification('textDocument/didOpen', {
-    textDocument: { uri: pathToFileURL(absFile).toString(), languageId: 'typescript', version: 1, text },
+    textDocument: { uri: pathToFileURL(absFile).toString(), languageId: langId(absFile), version: 1, text },
   });
 }
 
@@ -112,17 +128,20 @@ async function references(uri, pos) {
 
 // Sonda de TRUNCAMENTO: repete find_references até a contagem estabilizar,
 // registrando a curva. É o modo de falha #76870 (resultado parcial em silêncio).
-async function truncationProbe(uri, pos, { maxMs = 30000, everyMs = 300, stableHits = 4 } = {}) {
+async function truncationProbe(uri, pos, { maxMs = 60000, everyMs = 300, stableHits = 4 } = {}) {
   const curve = [];
   const start = now();
   let last = -1, stable = 0, firstCount = null, firstMs = null;
   while (now() - start < maxMs) {
     const ts = now();
-    const count = await references(uri, pos);
+    // servers como rust-analyzer LANÇAM erro enquanto indexam ('No references found at position').
+    // Tratamos como "ainda não pronto" (count = -1) e continuamos o polling.
+    let count;
+    try { count = await references(uri, pos); } catch { count = -1; }
     const at = +(now() - start).toFixed(1);
     curve.push({ atMs: at, count, latMs: +(now() - ts).toFixed(1) });
-    if (firstCount === null) { firstCount = count; firstMs = at; }
-    if (count === last) { stable++; if (stable >= stableHits) break; } else { stable = 0; }
+    if (count >= 0 && firstCount === null) { firstCount = count; firstMs = at; }
+    if (count === last && count > 0) { stable++; if (stable >= stableHits) break; } else { stable = 0; }
     last = count;
     await new Promise((r) => setTimeout(r, everyMs));
   }

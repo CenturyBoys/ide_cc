@@ -34,10 +34,18 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
 | `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
 
-**Roteamento por backend (achado real):** o tsgo é rápido e correto para navegação/rename, mas
-**não implementa refactorings** (extract/move retornam vazio). O **vtsls** (tsserver) tem o set
-completo. O servidor roteia cada operação para o backend certo e mantém **um processo por
-(projeto × backend)**, tudo persistente.
+**Roteamento por linguagem × operação:** o servidor escolhe o backend por extensão e operação,
+mantendo **um processo por (projeto × backend)**, tudo persistente:
+
+| Linguagem | navegação / rename | refactorings (extract/move) |
+|---|---|---|
+| TypeScript (`.ts/.tsx/.js`) | **tsgo** (rápido, não trunca) | **vtsls** (tsgo não implementa refactorings) |
+| Python (`.py`) | **basedpyright** | basedpyright |
+| Dart (`.dart`) | **dart language-server** (não trunca) | dart |
+| Rust (`.rs`) | **rust-analyzer** (cold ~30s, trunca; gate 60s) | rust-analyzer |
+| C# (`.cs`) | **csharp-ls** (Roslyn; cold ~24s, não trunca) | csharp-ls |
+
+Adicionar uma linguagem = um backend novo + um match em `nav_backend`/`refactor_backend`.
 
 Resolução de posição é **semântica** (via `documentSymbol`, com refino textual da coluna no
 identificador), com fallback textual — resolve "método dentro de classe" e desambigua.
@@ -58,7 +66,7 @@ Exemplo em [`../.mcp.json`](../.mcp.json). Ajuste os caminhos absolutos:
   "mcpServers": {
     "code-intel": {
       "command": "/CAMINHO/ABS/mcp/target/release/code-intel-mcp",
-      "env": { "TSGO_BIN": "/CAMINHO/ABS/tsgo", "VTSLS_BIN": "/CAMINHO/ABS/vtsls" }
+      "env": { "TSGO_BIN": "...tsgo", "VTSLS_BIN": "...vtsls", "BASEDPYRIGHT_BIN": "...basedpyright-langserver" }
     }
   }
 }
@@ -97,6 +105,50 @@ Resultados medidos (2026-09-18), com tsgo persistente:
 | `move_symbol(K, apply=true)` @ refactor-ts | **applied=true** — cria `src/K.ts`, adiciona `import { K }`, remove decl |
 
 Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSLS_BIN` além de `TSGO_BIN`).
+
+**Python** (basedpyright) — [`test-python.jsonl`](test-python.jsonl), precisa de `BASEDPYRIGHT_BIN`:
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ py-demo | **523 refs, stable** — o gate entregou o total (server sozinho trunca 3→523) |
+| `document_symbols` / `call_hierarchy(make_account)` | classe+métodos; **20 callers** |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/523 edições |
+| `rename(Account→make_account, apply=true)` | **applied=false, net_delta=342** — colisão detectada via PUSH diagnostics |
+
+**Dart** (Dart Analysis Server) — [`test-dart.jsonl`](test-dart.jsonl), precisa de `DART_BIN` e `dart pub get` no projeto:
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ dart-demo | **503 refs, stable** (Dart é eager, não trunca) |
+| `document_symbols` / `call_hierarchy(makeAccount)` | classe+métodos; **20 callers** |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/503 edições |
+| `rename(Account→makeAccount, apply=true)` | **rejected_by_server** — Dart valida e recusa a colisão na origem |
+
+**Rust** (rust-analyzer) — [`test-rust.jsonl`](test-rust.jsonl), precisa de `RUST_ANALYZER_BIN` (`rustup component add rust-analyzer`):
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ rust-demo | **524 refs, stable** — gate esperou ~22s do cold index (cargo check) |
+| `document_symbols` | Account(Struct), balance(Method), make_account(Function) |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/524 edições |
+| `rename(Account→i64, apply=true)` | **applied=false, net_delta=161** ("expected i64, found i32", nativo) |
+
+> **Nota Rust:** o `net_delta` captura diagnostics **nativos** do rust-analyzer, mas **não** os que
+> só o `cargo check` (flycheck) reporta — ele lê do disco e não vê a simulação em memória. Para
+> segurança total em Rust, use a validação pós-apply (`cargo check`/testes), prevista na Fase 5.
+
+**C#** (csharp-ls / Roslyn) — [`test-csharp.jsonl`](test-csharp.jsonl), precisa de **.NET SDK**,
+`DOTNET_ROOT`, `CSHARP_LS_BIN` (`dotnet tool install --global csharp-ls`):
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ cs-demo | **503 refs, stable** — gate cobriu ~13s de carga MSBuild+Roslyn |
+| `document_symbols` | Namespace, Account(Class), Value(Field), Balance()(Method), Factory(Class) |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/503 edições |
+| `rename(Account→Factory, apply=true)` | **applied=false, net_delta=505** — Roslyn (em memória) detecta a colisão |
+
+> Ao contrário do Rust, o Roslyn analisa **em memória** (vê o `didChange`), então o `net_delta`
+> é confiável para C#.
 
 ## Arquitetura (Fases 1–2)
 

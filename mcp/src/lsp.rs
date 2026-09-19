@@ -269,6 +269,9 @@ pub fn lang_id(abs_file: &str) -> &'static str {
     else if abs_file.ends_with(".jsx") { "javascriptreact" }
     else if abs_file.ends_with(".js") || abs_file.ends_with(".mjs") || abs_file.ends_with(".cjs") { "javascript" }
     else if abs_file.ends_with(".py") { "python" }
+    else if abs_file.ends_with(".dart") { "dart" }
+    else if abs_file.ends_with(".rs") { "rust" }
+    else if abs_file.ends_with(".cs") { "csharp" }
     else { "typescript" }
 }
 

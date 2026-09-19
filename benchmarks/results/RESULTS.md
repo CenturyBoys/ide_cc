@@ -260,6 +260,134 @@ agent-first** e a superfície de ferramentas — não a velocidade.
 
 ---
 
+## Run 007 — basedpyright @ py-demo (Fase 4: Python)
+
+- **Data:** 2026-09-18
+- **Setup:** `node benchmarks/scripts/gen-pyproject.mjs --modules 20 --refs 8`
+- **Comando:** `node lsp-bench.mjs --server basedpyright --fixture ../../fixtures/py-demo --file models.py --search "class Account" --symbol Account --newname Ledger`
+- **Server:** basedpyright (`basedpyright-langserver --stdio`), fork MIT do Pyright (Node)
+- **Fixture:** 20 módulos Python, **521 refs plantadas** a `Account` (523 reais)
+- **Alvo:** `Account` em `models.py`
+
+| Métrica | Valor |
+|---|---|
+| cold-start | 1160 ms |
+| **find_references — 1ª resposta** | **3 refs @ 2982 ms** |
+| **find_references — estável** | **523 refs @ 4942 ms** |
+| **Truncou a 1ª resposta?** | **SIM — 3 de 523** |
+| find_references warm p50 / p95 | 39.6 ms / 56.9 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 523 edições, 40 ms |
+
+### Leitura — o truncamento é TRANSVERSAL (não é quirk do tsserver)
+
+O basedpyright reproduz o **mesmo cold-index race** medido no vtsls (Run 002): a 1ª
+`find_references` retorna **3 de 523** referências e só converge para o total aos ~4,9 s, à
+medida que o índice carrega. **Confirma que o gate de warmup é uma necessidade cross-language**,
+não uma defesa específica de TypeScript. Quente, as operações são rápidas (rename de 523 edições
+em 40 ms) — o custo é todo no warmup.
+
+**Escolha de backend Python:** basedpyright pela **maturidade** (rename/references/symbols/call
+hierarchy completos, MIT). O mais *rápido* seria `ty` (Astral, Rust, ~80× incremental), mas é
+**beta** — registrado como troca futura (a camada é agnóstica de backend). Ver ROADMAP D2.
+
+### Pendências
+
+- [ ] Medir `ty` quando estabilizar e comparar com basedpyright.
+- [ ] Confirmar no MCP que o gate de warmup entrega 523 (não 3) em Python.
+- [ ] basedpyright é push-based (diagnostics) — validar net_delta via caminho PUSH do híbrido.
+
+---
+
+## Run 008 — dart @ dart-demo (Fase 4: Dart)
+
+- **Data:** 2026-09-18
+- **Setup:** `node benchmarks/scripts/gen-dartproject.mjs --modules 20 --refs 8` + `dart pub get`
+- **Comando:** `node lsp-bench.mjs --server dart --fixture ../../fixtures/dart-demo --file lib/models.dart --search "class Account" --symbol Account --newname Ledger`
+- **Server:** Dart Analysis Server (`dart language-server`, LSP nativo, BSD-3)
+- **Fixture:** pacote Dart puro, 20 módulos, ~503 refs a `Account`
+
+| Métrica | Valor |
+|---|---|
+| cold-start | **291 ms** |
+| find_references — 1ª resposta | **503 refs @ 1135 ms** |
+| find_references — estável | 503 refs @ 2584 ms |
+| **Truncou?** | **Não** (completo de primeira) |
+| find_references warm p50 / p95 | 64 / 123 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 503 edições, 57 ms |
+
+### Leitura
+
+O Dart Analysis Server **não trunca** (como o tsgo): retorna as 503 completas na 1ª resposta,
+analisando de forma eager. Cold-start baixo (291 ms) — **mas é um pacote Dart puro**; em projetos
+**Flutter** o startup é bem maior (grafo SDK+deps), como alerta o levantamento. Rode
+`dart pub get` (ou `flutter pub get`) antes: o server precisa do `package_config.json`.
+
+Padrão de servers até agora: **não truncam** tsgo e Dart (eager); **truncam** vtsls e
+basedpyright (lazy). O gate de warmup cobre ambos os casos.
+
+---
+
+## Run 009 — rust-analyzer @ rust-demo (Fase 4: Rust)
+
+- **Data:** 2026-09-18
+- **Setup:** `node benchmarks/scripts/gen-rustproject.mjs --modules 20 --refs 8` + `rustup component add rust-analyzer`
+- **Comando:** `node lsp-bench.mjs --server rust-analyzer --fixture ../../fixtures/rust-demo --file src/models.rs --search "struct Account" --symbol Account --newname Ledger`
+- **Server:** rust-analyzer 1.96.1 (LSP stdio, MIT/Apache)
+- **Fixture:** crate Rust, 20 módulos, ~523 refs a `Account`
+
+| Métrica | Valor |
+|---|---|
+| cold-start (handshake) | 47 ms |
+| **find_references — 1ª resposta** | **0 refs @ 23 ms** (server lança erro enquanto indexa) |
+| **find_references — estável** | **524 refs @ ~30 s** |
+| **Truncou?** | **SIM — 0 → 524 ao longo de ~30 s** |
+| find_references warm p50 / p95 | 40 / 53 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 524 edições, 51 ms |
+
+### Leitura — o server MAIS pesado de aquecer
+
+O rust-analyzer roda `cargo metadata` + proc-macros + `cargo check` no cold start: leva **~30 s**
+para convergir de 0→524, e **lança erro** (`No references found at position`) enquanto não terminou.
+Reforça ao máximo o design: **servidor persistente + gate de warmup** (pagar 30 s por operação
+seria inviável). Warm é rápido (~40 ms). O gate do MCP foi ajustado: timeout de 60 s + resiliência
+a erro (erro durante indexação = "não pronto", re-tenta).
+
+**Limitação importante (net_delta em Rust):** o rust-analyzer tem 2 fontes de diagnostics — a
+**nativa** (vê o `didChange` em memória) e o **flycheck (`cargo check`)**, que **lê do disco**.
+Como a simulação do `net_delta` é em memória (sem tocar o disco), ela captura os erros **nativos**
+(ex.: rename `Account→i64` → 161 erros "expected i64, found i32", **bloqueado** ✅), mas **não** os
+que só o `cargo check` pega (ex.: import duplicado E0252). Para segurança total em Rust, a **Fase de
+validação (run build/test)** pós-apply é necessária — já prevista no roadmap.
+
+---
+
+## Run 010 — csharp-ls @ cs-demo (Fase 4: C#)
+
+- **Data:** 2026-09-18
+- **Setup:** .NET SDK 10.0.401 (dotnet-install LTS) + `dotnet tool install --global csharp-ls` + `node gen-csproject.mjs --tfm net10.0`
+- **Comando:** `DOTNET_ROOT=~/.dotnet node lsp-bench.mjs --server csharp-ls --fixture ../../fixtures/cs-demo --file Models.cs --search "class Account" --symbol Account --newname Ledger`
+- **Server:** csharp-ls 0.28.0 (Roslyn, MIT, dotnet tool)
+- **Fixture:** projeto C#, 20 módulos, ~503 refs a `Account`
+
+| Métrica | Valor |
+|---|---|
+| cold-start (handshake) | 3907 ms |
+| find_references — 1ª resposta | **503 refs @ 24365 ms** (bloqueia até carregar MSBuild+Roslyn) |
+| find_references — estável | 503 refs @ 25923 ms |
+| **Truncou?** | **Não** (bloqueia até completo) |
+| find_references warm p50 / p95 | 67 / 109 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 503 edições, **3560 ms** (Roslyn é mais pesado no rename) |
+
+### Leitura
+
+csharp-ls (Roslyn) **não trunca** — bloqueia até a carga da solution/MSBuild (~24 s de cold),
+depois retorna completo. Warm rápido para navegação (67 ms); rename Roslyn é mais lento (3,5 s).
+Requer **.NET SDK** e `DOTNET_ROOT` apontando pra ele. Diferente do Rust, os diagnostics do Roslyn
+são **em memória** (veem o `didChange`), então o **net_delta é confiável** (colisão detectada:
+505 erros, bloqueado — ver `mcp/README.md`).
+
+---
+
 ## Template para novas runs
 
 ```

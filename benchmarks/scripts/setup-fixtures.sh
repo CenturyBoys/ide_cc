@@ -45,4 +45,27 @@ export function useCompute(): number {
 }
 EOF
 
+# --- projeto Python sintético (Fase 4: basedpyright) --------------------
+echo ">> gerando projeto Python sintético (20 módulos)..."
+node "$ROOT/benchmarks/scripts/gen-pyproject.mjs" --modules 20 --refs 8 --out "$FIX/py-demo"
+
+# --- pacote Dart sintético (Fase 4: Dart Analysis Server) ---------------
+echo ">> gerando pacote Dart sintético (20 módulos)..."
+node "$ROOT/benchmarks/scripts/gen-dartproject.mjs" --modules 20 --refs 8 --out "$FIX/dart-demo"
+if command -v dart >/dev/null 2>&1; then
+  (cd "$FIX/dart-demo" && dart pub get >/dev/null 2>&1) && echo "   dart pub get ok"
+else
+  echo "   (dart ausente; rode 'dart pub get' em $FIX/dart-demo antes de usar)"
+fi
+
+# --- crate Rust sintético (Fase 4: rust-analyzer) -----------------------
+echo ">> gerando crate Rust sintético (20 módulos)..."
+node "$ROOT/benchmarks/scripts/gen-rustproject.mjs" --modules 20 --refs 8 --out "$FIX/rust-demo"
+
+# --- projeto C# sintético (Fase 4: csharp-ls/Roslyn) --------------------
+CS_TFM="${CS_TFM:-net10.0}"
+echo ">> gerando projeto C# sintético (20 módulos, TFM $CS_TFM)..."
+node "$ROOT/benchmarks/scripts/gen-csproject.mjs" --modules 20 --refs 8 --tfm "$CS_TFM" --out "$FIX/cs-demo"
+echo "   (C# requer .NET SDK + 'dotnet tool install --global csharp-ls'; ajuste CS_TFM ao SDK instalado)"
+
 echo ">> fixtures prontos em $FIX"

@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_references","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"Account"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"document_symbols","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"rename_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"Account","new_name":"Ledger"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"rename_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"Account","new_name":"i64","apply":true}}}

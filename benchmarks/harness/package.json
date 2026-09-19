@@ -14,6 +14,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@typescript/native-preview": "^7.0.0-dev.20260707.2",
     "@vtsls/language-server": "^0.3.0",
+    "basedpyright": "^1.40.1",
     "typescript": "^7.0.2",
     "vscode-jsonrpc": "^9.0.2",
     "vscode-languageserver-protocol": "^3.18.3"

@@ -31,8 +31,62 @@ mudança correta**.
 | **2. Edição segura** | apply→verify com net_delta | ✅ **concluída** |
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
-| **4. Multi-linguagem** | adapters: **Python** (basedpyright) → depois Dart, Rust, C# | ⏭️ **próxima** |
-| **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM | ⬜ pendente |
+| **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
+| **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM, **validação build/test** | ⬜ **próxima** |
+
+### Fase 4 — Python: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-python`. basedpyright plugado; roteamento por **linguagem × operação**
+(`nav_backend`/`refactor_backend` por extensão). Provado em `fixtures/py-demo` (20 módulos):
+- find_references: **523 refs, stable** (gate entregou o total; sozinho o server truncava 3→523, Run 007).
+- document_symbols, call_hierarchy (20 callers), rename preview (net_delta 0) — OK.
+- rename colisão apply=true → **net_delta 342, bloqueado** (net_delta via **PUSH** diagnostics — basedpyright é push).
+- Confirma: camada **agnóstica**, gate **cross-language**, diagnostics **híbrido** funcionam. Teste: `mcp/test-python.jsonl`.
+- Decisão D2b: **basedpyright** (maturidade, MIT); `ty` (Rust, ~80× incremental) é troca futura quando sair do beta.
+
+### Fase 4 — Dart: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-dart`. Dart Analysis Server (`dart language-server`, LSP nativo). Provado em
+`fixtures/dart-demo` (20 módulos, requer `dart pub get`):
+- find_references: **503, stable de primeira** (Dart é eager, NÃO trunca — como o tsgo; Run 008).
+- document_symbols, call_hierarchy (20 callers), rename preview (net_delta 0) — OK.
+- rename colisão apply=true → **rejeitado pelo server** (`rejected_by_server`, "Library already declares...").
+  Achado: backends têm defesas distintas — tsgo/basedpyright geram o edit (nosso net_delta pega),
+  Dart valida e recusa na origem. Ambos: não aplicado, disco intacto. Teste: `mcp/test-dart.jsonl`.
+- cold-start baixo (291 ms) em pacote puro; **Flutter será mais lento** (SDK+deps).
+
+### Fase 4 — Rust: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-rust`. rust-analyzer (`rustup component add rust-analyzer`). Provado em
+`fixtures/rust-demo`:
+- find_references: **524, stable** — server mais pesado (cold ~30s: cargo metadata+check); trunca 0→524.
+  Gate ajustado: timeout 60s + resiliência a erro (rust-analyzer lança erro enquanto indexa). Run 009.
+- document_symbols, rename preview (net_delta 0) — OK.
+- rename `Account→i64` apply=true → **net_delta 161, bloqueado** (erros nativos "expected i64, found i32").
+- **Limitação documentada:** net_delta em memória vê diagnostics NATIVOS, não os do `cargo check`
+  (flycheck lê disco). Segurança total em Rust exige a Fase de validação (build/test) pós-apply.
+
+### Fase 4 — C#: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-csharp`. .NET SDK 10.0.401 (dotnet-install) + csharp-ls 0.28.0 (Roslyn, dotnet
+tool). Provado em `fixtures/cs-demo` (requer `DOTNET_ROOT`):
+- find_references: **503, stable** — não trunca (bloqueia ~13-24s na carga MSBuild+Roslyn). Run 010.
+- document_symbols, rename preview (net_delta 0) — OK.
+- rename `Account→Factory` apply=true → **net_delta 505, bloqueado** (Roslyn detecta colisão em memória).
+- Roslyn analisa **em memória** (vê didChange) → net_delta confiável (≠ Rust/cargo check).
+
+### Fase 4 — CONCLUÍDA: 5/5 linguagens
+
+TypeScript (tsgo/vtsls) · Python (basedpyright) · Dart · Rust (rust-analyzer) · C# (csharp-ls).
+A camada é comprovadamente **agnóstica**: cada linguagem = 1 backend + matches em
+`lang_id`/`nav_backend`/`refactor_backend`. Runs 007–010 no RESULTS.md.
+
+### Reforço do design (transversal, 4 linguagens medidas)
+
+- **Truncam (lazy):** vtsls, basedpyright, rust-analyzer. **Não truncam (eager):** tsgo, Dart.
+- rust-analyzer é o cold-start mais caro (~30s) → warmup+persistência são ainda mais críticos.
+- Defesas de rename variam: net_delta (tsgo/basedpyright/vtsls/rust-nativo) vs rejeição no server (Dart).
+- net_delta em memória não cobre erros de build externo (Rust/cargo check) → Fase de validação.
 
 ## Estado atual (8 ferramentas, TypeScript)
 

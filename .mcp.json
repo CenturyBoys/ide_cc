@@ -4,7 +4,12 @@
       "command": "/home/ximit/Projects/ide_cc/mcp/target/release/code-intel-mcp",
       "env": {
         "TSGO_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/tsgo",
-        "VTSLS_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/vtsls"
+        "VTSLS_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/vtsls",
+        "BASEDPYRIGHT_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/basedpyright-langserver",
+        "DART_BIN": "dart",
+        "RUST_ANALYZER_BIN": "rust-analyzer",
+        "CSHARP_LS_BIN": "csharp-ls",
+        "DOTNET_ROOT": "/home/ximit/.dotnet"
       }
     }
   }
