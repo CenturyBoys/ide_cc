@@ -6,6 +6,10 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- Workflow de release: alvo `x86_64-apple-darwin` migrado de `macos-13` (runner escasso — travava a
+  fila por horas) para `macos-latest` com cross-compile. Os 4 binários passam a sair de forma confiável.
+
 ### Added
 - **`docs/LANGUAGE-SETUP.md`**: requisitos de config por linguagem para resultados corretos
   (validado em projeto real; Python exige `[tool.basedpyright]` include/venv, senão referências
