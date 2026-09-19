@@ -39,7 +39,17 @@ const now = () => Number(process.hrtime.bigint() / 1000n) / 1000; // ms, float
 const SERVERS = {
   vtsls: { cmd: join(__dirname, 'node_modules/.bin/vtsls'), args: ['--stdio'] },
   tsgo: { cmd: join(__dirname, 'node_modules/.bin/tsgo'), args: ['--lsp', '-stdio'] },
+  basedpyright: { cmd: join(__dirname, 'node_modules/.bin/basedpyright-langserver'), args: ['--stdio'] },
 };
+
+// languageId do LSP a partir da extensão (o harness é multi-linguagem agora)
+function langId(file) {
+  if (file.endsWith('.py')) return 'python';
+  if (file.endsWith('.tsx')) return 'typescriptreact';
+  if (file.endsWith('.jsx')) return 'javascriptreact';
+  if (file.endsWith('.js') || file.endsWith('.mjs')) return 'javascript';
+  return 'typescript';
+}
 const spec = SERVERS[SERVER];
 if (!spec) { console.error(`server desconhecido: ${SERVER}`); process.exit(1); }
 
@@ -99,7 +109,7 @@ async function initialize() {
 function openDoc(absFile) {
   const text = readFileSync(absFile, 'utf8');
   conn.sendNotification('textDocument/didOpen', {
-    textDocument: { uri: pathToFileURL(absFile).toString(), languageId: 'typescript', version: 1, text },
+    textDocument: { uri: pathToFileURL(absFile).toString(), languageId: langId(absFile), version: 1, text },
   });
 }
 

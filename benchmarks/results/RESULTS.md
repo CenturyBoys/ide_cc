@@ -260,6 +260,44 @@ agent-first** e a superfície de ferramentas — não a velocidade.
 
 ---
 
+## Run 007 — basedpyright @ py-demo (Fase 4: Python)
+
+- **Data:** 2026-09-18
+- **Setup:** `node benchmarks/scripts/gen-pyproject.mjs --modules 20 --refs 8`
+- **Comando:** `node lsp-bench.mjs --server basedpyright --fixture ../../fixtures/py-demo --file models.py --search "class Account" --symbol Account --newname Ledger`
+- **Server:** basedpyright (`basedpyright-langserver --stdio`), fork MIT do Pyright (Node)
+- **Fixture:** 20 módulos Python, **521 refs plantadas** a `Account` (523 reais)
+- **Alvo:** `Account` em `models.py`
+
+| Métrica | Valor |
+|---|---|
+| cold-start | 1160 ms |
+| **find_references — 1ª resposta** | **3 refs @ 2982 ms** |
+| **find_references — estável** | **523 refs @ 4942 ms** |
+| **Truncou a 1ª resposta?** | **SIM — 3 de 523** |
+| find_references warm p50 / p95 | 39.6 ms / 56.9 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 523 edições, 40 ms |
+
+### Leitura — o truncamento é TRANSVERSAL (não é quirk do tsserver)
+
+O basedpyright reproduz o **mesmo cold-index race** medido no vtsls (Run 002): a 1ª
+`find_references` retorna **3 de 523** referências e só converge para o total aos ~4,9 s, à
+medida que o índice carrega. **Confirma que o gate de warmup é uma necessidade cross-language**,
+não uma defesa específica de TypeScript. Quente, as operações são rápidas (rename de 523 edições
+em 40 ms) — o custo é todo no warmup.
+
+**Escolha de backend Python:** basedpyright pela **maturidade** (rename/references/symbols/call
+hierarchy completos, MIT). O mais *rápido* seria `ty` (Astral, Rust, ~80× incremental), mas é
+**beta** — registrado como troca futura (a camada é agnóstica de backend). Ver ROADMAP D2.
+
+### Pendências
+
+- [ ] Medir `ty` quando estabilizar e comparar com basedpyright.
+- [ ] Confirmar no MCP que o gate de warmup entrega 523 (não 3) em Python.
+- [ ] basedpyright é push-based (diagnostics) — validar net_delta via caminho PUSH do híbrido.
+
+---
+
 ## Template para novas runs
 
 ```

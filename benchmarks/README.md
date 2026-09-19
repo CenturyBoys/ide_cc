@@ -87,5 +87,9 @@ Conclusão em [`results/RESULTS.md`](results/RESULTS.md) → *Síntese da Fase 0
 único rápido **e** correto (não trunca no monorepo); vtsls trunca em silêncio; Serena é
 correto mas lento.
 
-Próximos: memória residente por server; monorepo maior (100+ pacotes); demais linguagens
-(Python/Dart/Rust/C#); investigar a divergência de contagem tsgo(64) vs vtsls(55) no zod.
+**Python (Fase 4):** `basedpyright` medido em `py-demo` (Run 007) — trunca 3→523 igual ao vtsls,
+confirmando que o cold-index race é **cross-language**. Rodar:
+`node lsp-bench.mjs --server basedpyright --fixture ../../fixtures/py-demo --file models.py --search "class Account" --symbol Account --newname Ledger`
+
+Próximos: memória residente por server; monorepo maior (100+ pacotes); Dart/Rust/C#; comparar
+`ty` (Rust) vs basedpyright; divergência tsgo(64) vs vtsls(55) no zod.
