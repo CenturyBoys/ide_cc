@@ -1,8 +1,13 @@
 [package]
 name = "code-intel-mcp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "MCP fino e rápido sobre um language server (tsgo) com gate de warmup — POC 'IDE na mão da LLM'"
+description = "MCP server for semantic code operations (rename/move/extract) over real language servers — 'an IDE in the LLM's hands'"
+license = "MIT"
+repository = "https://github.com/CenturyBoys/ide_cc"
+readme = "../README.md"
+keywords = ["mcp", "lsp", "refactoring", "code-intelligence", "claude"]
+categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "code-intel-mcp"

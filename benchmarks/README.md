@@ -80,6 +80,13 @@ Símbolo: **`ZodType`** (classe abstrata base), definida em `fixtures/zod/src/ty
 estressar `find_references`/`rename`. O harness localiza a posição do símbolo
 programaticamente (não hardcoda linha/coluna), então continua válido se o fixture mudar.
 
+## Experimento A/B (prova de valor)
+
+`node ab-rename.mjs` — compara rename por texto-cru vs. semântico no fixture-armadilha `ab-rename`:
+texto-cru = **incorreto** (corrompe strings/símbolo homônimo, mas compila → bug silencioso);
+semântico = **correto**. Detalhes em [`../docs/AB-EXPERIMENT.md`](../docs/AB-EXPERIMENT.md).
+Nível 2 (agente real com/sem MCP): `bash scripts/ab-agent.sh`.
+
 ## Estado (Fase 0)
 
 Já medidos: **vtsls**, **tsgo** e **Serena** em pacote único (zod) e monorepo (mono-ts).

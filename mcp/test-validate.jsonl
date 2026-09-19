@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"validate_build","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","lang":"rust"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rename_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"Account","new_name":"make_account","apply":true,"verify_build":true}}}

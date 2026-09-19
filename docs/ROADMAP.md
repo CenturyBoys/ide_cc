@@ -32,7 +32,7 @@ mudança correta**.
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
 | **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
-| **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM, **validação build/test** | ⬜ **próxima** |
+| **5. Otimização** | **validação ✅ · frescor ✅ · cache entre sessões ✅** · warmup dirigido, paralelismo, telemetria, RAM | 🟡 **em curso** |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
 
@@ -107,6 +107,43 @@ Passos previstos (branch `feature/phase-4-python`):
 5. Validar: find_references, rename (apply→verify), document_symbols, call_hierarchy.
 6. Benchmark de latência do basedpyright no harness; registrar em RESULTS.md.
 7. Documentar quirks (basedpyright é push; completude de references exige workspace-mode).
+
+### Fase 5 — Validação de build: CONCLUÍDO (2026-09-18)
+
+`feature/phase-5-validation`. Defesa em **duas camadas**:
+1. `net_delta` em memória (rápido; erros nativos do server).
+2. `verify_build`/`validate_build`: roda o build da linguagem NO DISCO (cargo check / dart analyze /
+   dotnet build / …), pega erros que a simulação em memória não vê e **reverte** se falhar.
+- Nova tool `validate_build`; opção `verify_build:true` em rename/extract/move (9 tools no total).
+- Provado no Rust: rename `Account→make_account` — net_delta memória=0 (passou), mas `cargo check`
+  pegou **E0252 (import duplicado)** → **revertido**, disco intacto. Comando por linguagem,
+  override via env `<LANG>_CHECK_CMD`. Teste: `mcp/test-validate.jsonl`.
+
+### Fase 5 — Frescor + Cache entre sessões: CONCLUÍDO (2026-09-18)
+
+`feature/phase-5-cache`.
+- **Frescor:** `ensure_open` detecta mudança de mtime no disco e re-sincroniza via `didChange` —
+  edições feitas FORA do Claude são refletidas (pré-requisito de correção p/ qualquer cache).
+  Teste `benchmarks/harness/freshness-test.mjs`.
+- **Cache entre sessões (daemon, opt-in `CODE_INTEL_DAEMON=1`):** daemon separado dono dos LSPs
+  sobrevive ao restart do MCP (proxy via Unix socket; idle-exit 30min). Medido: 2ª sessão MCP no
+  mesmo projeto Rust = **1,2 s vs 27,9 s da 1ª (23× mais rápido)**, mesmo resultado (524).
+  Teste `benchmarks/harness/daemon-cache-test.mjs`. Vale para servers pesados (Rust/C#) + multi-sessão.
+
+Resto da Fase 5 (pendente): RAM residente por server, warmup dirigido (pré-abrir tsconfigs),
+paralelismo, telemetria de tempo por operação.
+
+### Experimento A/B — "com e sem a camada" (2026-09-18)
+
+`feature/ab-experiment`. Prova de valor (Time to Correct Change). Ver [`AB-EXPERIMENT.md`](AB-EXPERIMENT.md).
+- Fixture-armadilha `fixtures/ab-rename`: renomear a classe `Widget`→`Gadget` com armadilhas (const
+  homônima não-relacionada, strings `"Widget"`, comentário, `WidgetFactory`).
+- **A/B mecânico** (`benchmarks/harness/ab-rename.mjs`): texto-cru (`\bWidget\b`→sed) = **INCORRETO**
+  em 2ms (corrompeu strings + const alheia, mas **compilou** → bug silencioso); semântico
+  (`rename_symbol`) = **CORRETO** em 1446ms. → a camada troca "rápido e errado em silêncio" por
+  "correto de primeira".
+- **A/B de agente** (`benchmarks/scripts/ab-agent.sh`): roda `claude -p` com/sem `.mcp.json` +
+  skill `semantic-refactor`; mede o loop completo (requer CLI `claude`).
 
 ## Pendências transversais
 

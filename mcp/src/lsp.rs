@@ -2,7 +2,7 @@
 // Padrão (endossado pela pesquisa / Serena): processo long-lived + thread leitora dedicada
 // roteando respostas por id; requests síncronos bloqueantes. Sem runtime async.
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -14,7 +14,7 @@ pub struct LspClient {
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<i64, Sender<Value>>>>,
     id: AtomicI64,
-    opened: Mutex<HashSet<String>>,
+    opened: Mutex<HashMap<String, u128>>, // path -> mtime (ms) já sincronizado
     versions: Mutex<HashMap<String, i64>>,
     // diagnostics via PUSH (publishDiagnostics) — usado quando o server não suporta PULL
     diagnostics: Arc<Mutex<HashMap<String, Value>>>,
@@ -93,7 +93,10 @@ impl LspClient {
                         let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
                         let result = match method {
                             "workspace/configuration" => {
-                                let n = msg["params"]["items"].as_array().map(|a| a.len()).unwrap_or(1);
+                                let n = msg["params"]["items"]
+                                    .as_array()
+                                    .map(|a| a.len())
+                                    .unwrap_or(1);
                                 Value::Array(vec![json!({}); n])
                             }
                             _ => Value::Null, // registerCapability, workDoneProgress/create, etc.
@@ -102,9 +105,14 @@ impl LspClient {
                         let _ = write_frame(&mut stdin_w.lock().unwrap(), &resp);
                     } else if is_method {
                         // notificação server->client: captura diagnostics via PUSH
-                        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/publishDiagnostics") {
+                        if msg.get("method").and_then(|m| m.as_str())
+                            == Some("textDocument/publishDiagnostics")
+                        {
                             if let Some(uri) = msg["params"]["uri"].as_str() {
-                                diagnostics.lock().unwrap().insert(uri.to_string(), msg["params"]["diagnostics"].clone());
+                                diagnostics
+                                    .lock()
+                                    .unwrap()
+                                    .insert(uri.to_string(), msg["params"]["diagnostics"].clone());
                                 diag_gen.fetch_add(1, Ordering::SeqCst);
                             }
                         }
@@ -117,7 +125,7 @@ impl LspClient {
             stdin,
             pending,
             id: AtomicI64::new(1),
-            opened: Mutex::new(HashSet::new()),
+            opened: Mutex::new(HashMap::new()),
             versions: Mutex::new(HashMap::new()),
             diagnostics,
             diag_gen,
@@ -189,20 +197,38 @@ impl LspClient {
     }
 
     /// Garante didOpen do arquivo (idempotente). Necessário antes de operações semânticas.
+    /// Garante que o server tem o conteúdo ATUAL do disco. Se o arquivo já foi aberto mas mudou
+    /// no disco (edição externa ao Claude), re-sincroniza via didChange. Isto é o "freshness":
+    /// sem ele, um server persistente serviria conteúdo obsoleto.
     pub fn ensure_open(&self, abs_file: &str) -> Result<(), String> {
-        {
-            if self.opened.lock().unwrap().contains(abs_file) {
-                return Ok(());
+        let cur = disk_mtime(abs_file);
+        let tracked = self.opened.lock().unwrap().get(abs_file).copied();
+        match tracked {
+            Some(t) if cur == Some(t) => return Ok(()), // aberto e sem mudança no disco
+            Some(_) => {
+                // aberto, mas o disco mudou -> re-sincroniza o conteúdo
+                let text = std::fs::read_to_string(abs_file)
+                    .map_err(|e| format!("ler {abs_file}: {e}"))?;
+                self.did_change(abs_file, &text);
+            }
+            None => {
+                let text = std::fs::read_to_string(abs_file)
+                    .map_err(|e| format!("ler {abs_file}: {e}"))?;
+                let lang = lang_id(abs_file);
+                self.notify(
+                    "textDocument/didOpen",
+                    json!({"textDocument":{"uri":path_to_uri(abs_file),"languageId":lang,"version":1,"text":text}}),
+                );
+                self.versions
+                    .lock()
+                    .unwrap()
+                    .insert(abs_file.to_string(), 1);
             }
         }
-        let text = std::fs::read_to_string(abs_file).map_err(|e| format!("ler {abs_file}: {e}"))?;
-        let lang = lang_id(abs_file);
-        self.notify(
-            "textDocument/didOpen",
-            json!({"textDocument":{"uri":path_to_uri(abs_file),"languageId":lang,"version":1,"text":text}}),
-        );
-        self.opened.lock().unwrap().insert(abs_file.to_string());
-        self.versions.lock().unwrap().insert(abs_file.to_string(), 1);
+        self.opened
+            .lock()
+            .unwrap()
+            .insert(abs_file.to_string(), cur.unwrap_or(0));
         Ok(())
     }
 
@@ -230,12 +256,21 @@ impl LspClient {
             "textDocument/didOpen",
             json!({"textDocument":{"uri":path_to_uri(abs_file),"languageId":lang,"version":1,"text":text}}),
         );
-        self.opened.lock().unwrap().insert(abs_file.to_string());
-        self.versions.lock().unwrap().insert(abs_file.to_string(), 1);
+        self.opened
+            .lock()
+            .unwrap()
+            .insert(abs_file.to_string(), disk_mtime(abs_file).unwrap_or(0));
+        self.versions
+            .lock()
+            .unwrap()
+            .insert(abs_file.to_string(), 1);
     }
 
     pub fn close(&self, abs_file: &str) {
-        self.notify("textDocument/didClose", json!({"textDocument":{"uri":path_to_uri(abs_file)}}));
+        self.notify(
+            "textDocument/didClose",
+            json!({"textDocument":{"uri":path_to_uri(abs_file)}}),
+        );
         self.opened.lock().unwrap().remove(abs_file);
     }
 
@@ -246,13 +281,22 @@ impl LspClient {
             json!({"textDocument":{"uri":path_to_uri(abs_file)}}),
             10_000,
         )?;
-        Ok(res.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default())
+        Ok(res
+            .get("items")
+            .and_then(|i| i.as_array())
+            .cloned()
+            .unwrap_or_default())
     }
 
     /// Diagnostics via PUSH (do store preenchido por publishDiagnostics).
     pub fn pushed_diagnostics(&self, abs_file: &str) -> Vec<Value> {
         let uri = path_to_uri(abs_file);
-        self.diagnostics.lock().unwrap().get(&uri).and_then(|v| v.as_array().cloned()).unwrap_or_default()
+        self.diagnostics
+            .lock()
+            .unwrap()
+            .get(&uri)
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
     }
 
     pub fn diag_gen(&self) -> u64 {
@@ -264,15 +308,34 @@ impl LspClient {
     }
 }
 
+// mtime do arquivo em ms desde epoch (para detectar edições externas ao Claude)
+pub fn disk_mtime(abs: &str) -> Option<u128> {
+    std::fs::metadata(abs)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+}
+
 pub fn lang_id(abs_file: &str) -> &'static str {
-    if abs_file.ends_with(".tsx") { "typescriptreact" }
-    else if abs_file.ends_with(".jsx") { "javascriptreact" }
-    else if abs_file.ends_with(".js") || abs_file.ends_with(".mjs") || abs_file.ends_with(".cjs") { "javascript" }
-    else if abs_file.ends_with(".py") { "python" }
-    else if abs_file.ends_with(".dart") { "dart" }
-    else if abs_file.ends_with(".rs") { "rust" }
-    else if abs_file.ends_with(".cs") { "csharp" }
-    else { "typescript" }
+    if abs_file.ends_with(".tsx") {
+        "typescriptreact"
+    } else if abs_file.ends_with(".jsx") {
+        "javascriptreact"
+    } else if abs_file.ends_with(".js") || abs_file.ends_with(".mjs") || abs_file.ends_with(".cjs")
+    {
+        "javascript"
+    } else if abs_file.ends_with(".py") {
+        "python"
+    } else if abs_file.ends_with(".dart") {
+        "dart"
+    } else if abs_file.ends_with(".rs") {
+        "rust"
+    } else if abs_file.ends_with(".cs") {
+        "csharp"
+    } else {
+        "typescript"
+    }
 }
 
 pub fn path_to_uri(p: &str) -> String {

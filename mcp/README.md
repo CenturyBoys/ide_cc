@@ -33,6 +33,11 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `call_hierarchy` | tsgo | `prepareCallHierarchy`+`incomingCalls` | quem chama este símbolo |
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
 | `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
+| `validate_build` | build da linguagem | `cargo check`/`dart analyze`/`dotnet build`… | roda o build NO DISCO e reporta erros (2ª camada de segurança) |
+
+Além disso, `rename`/`extract`/`move` aceitam `verify_build: true` (com `apply=true`): após
+escrever no disco, rodam o build da linguagem e **revertem se falhar** — fecha o buraco do
+`net_delta` em memória (ex.: erros que só o `cargo check` do Rust vê).
 
 **Roteamento por linguagem × operação:** o servidor escolhe o backend por extensão e operação,
 mantendo **um processo por (projeto × backend)**, tudo persistente:
@@ -150,6 +155,17 @@ Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSL
 > Ao contrário do Rust, o Roslyn analisa **em memória** (vê o `didChange`), então o `net_delta`
 > é confiável para C#.
 
+**Validação de build (Fase 5)** — [`test-validate.jsonl`](test-validate.jsonl), 2ª camada de segurança:
+
+| Cenário | Resultado |
+|---|---|
+| `validate_build(rust-demo)` fixture limpo | **build_ok=true**, sem erros |
+| `rename(Account→make_account, apply=true, verify_build=true)` @ rust-demo | **applied=false** — `net_delta` (memória) passou (0), mas `cargo check` pegou **E0252 (import duplicado)** → **revertido** |
+
+> Fecha o buraco do Rust: a simulação em memória não vê erros de `cargo check` (lê disco); a
+> validação de build pós-apply vê. Comando por linguagem (cargo/dart/dotnet/…), override via env
+> `<LANG>_CHECK_CMD`. TypeScript/Python não têm comando default (configure via env se quiser).
+
 ## Arquitetura (Fases 1–2)
 
 ```
@@ -168,6 +184,32 @@ Claude Code ──MCP(stdio, JSON/linha)──> code-intel-mcp (Rust)
 O `net_delta` usa **pull diagnostics** (não push): como o tsgo é pull-based e o server processa
 mensagens em ordem, um `textDocument/diagnostic` após o `didChange` reflete deterministicamente
 o estado pós-edição — sem heurística de "esperar estabilizar".
+
+## Frescor e cache entre sessões (Fase 5)
+
+**Frescor (freshness) — sempre ligado.** Um server persistente serviria conteúdo obsoleto se um
+arquivo fosse editado **fora do Claude** (outro editor, `git checkout`). O `ensure_open` detecta
+mudança de **mtime** no disco e **re-sincroniza** (`didChange`) antes de operar. Verificado em
+[`../benchmarks/harness/freshness-test.mjs`](../benchmarks/harness/freshness-test.mjs): edição
+externa (função `two` adicionada no disco) aparece na consulta seguinte.
+
+**Cache entre sessões (daemon) — opt-in via `CODE_INTEL_DAEMON=1`.** O Claude Code recria o
+processo MCP a cada sessão, matando os LSPs quentes → paga o cold-start de novo (rust-analyzer
+~30s, csharp-ls ~24s). Com o daemon, um processo separado é dono dos LSPs e **sobrevive ao
+restart** do MCP (que vira um proxy fino sobre um Unix socket). O frescor garante que arquivos
+mudados entre sessões são re-sincronizados, então é seguro.
+
+Medido ([`../benchmarks/harness/daemon-cache-test.mjs`](../benchmarks/harness/daemon-cache-test.mjs)),
+2 sessões MCP separadas no mesmo projeto Rust:
+
+| Sessão | | Tempo |
+|---|---|---|
+| 1 (cold, sobe daemon + rust-analyzer) | 524 refs | **27,9 s** |
+| 2 (MCP novo, reconecta ao daemon quente) | 524 refs | **1,2 s** (**23× mais rápido**) |
+
+Vale a pena só para servers de cold-start pesado (Rust, C#) **e** fluxo multi-sessão. Numa sessão
+longa única, a persistência in-process (default) já resolve. O daemon encerra após 30 min ocioso.
+Rode o daemon manualmente com `code-intel-mcp --daemon` (ou deixe o MCP subir sob demanda).
 
 ## Limitações conhecidas (POC) / próximos passos
 

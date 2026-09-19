@@ -44,9 +44,14 @@ cd mcp && TSGO_BIN=../benchmarks/harness/node_modules/.bin/tsgo \
   **vtsls** para refactorings (extract/move — tsgo não os implementa). Roteamento por operação.
 - **Risco #1 = cold-index race** (#76870): a camada tem um **gate de warmup** e nunca retorna
   contagem parcial durante indexação.
-- **Segurança de edição = `net_delta`**: simula a edição em memória, mede erros antes/depois, só
-  aplica se não introduzir erros. Helper `verify_and_apply` compartilhado por rename/extract/move.
+- **Segurança de edição = 2 camadas**: (1) `net_delta` em memória (simula, mede erros antes/depois,
+  só aplica se não introduzir erros; helper `verify_and_apply` compartilhado por rename/extract/move);
+  (2) `verify_build`/`validate_build` roda o build da linguagem no disco e reverte se falhar — pega
+  erros que a simulação em memória não vê (ex.: `cargo check` do Rust).
 - **Diagnostics híbrido**: PULL (tsgo) ou PUSH (vtsls/pyright), detectado por capability.
+- **Frescor**: `ensure_open` re-sincroniza (didChange) quando o mtime do disco muda → edições
+  feitas fora do Claude são refletidas. **Cache entre sessões** (opt-in `CODE_INTEL_DAEMON=1`):
+  daemon dono dos LSPs sobrevive ao restart do MCP (proxy Unix socket) — 2ª sessão ~23× + rápida.
 - Camada em **Rust**; navegação pura o LSP nativo do Claude Code já faz — nosso valor é a
   **edição mecânica segura**.
 

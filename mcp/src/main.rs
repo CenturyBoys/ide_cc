@@ -3,7 +3,7 @@
 // tsgo, com a defesa central: um GATE DE WARMUP que nunca devolve uma contagem de referências
 // parcial durante a indexação (o modo de falha #76870, medido em benchmarks/results/RESULTS.md).
 mod lsp;
-use lsp::{uri_to_path, path_to_uri, LspClient};
+use lsp::{path_to_uri, uri_to_path, LspClient};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, Write};
@@ -16,18 +16,30 @@ use std::time::{Duration, Instant};
 // - Python: basedpyright para tudo.
 // A camada é agnóstica: adicionar linguagem = adicionar um backend + um match aqui.
 fn nav_backend(file: &str) -> &'static str {
-    if file.ends_with(".py") { "basedpyright" }
-    else if file.ends_with(".dart") { "dart" }
-    else if file.ends_with(".rs") { "rust-analyzer" }
-    else if file.ends_with(".cs") { "csharp-ls" }
-    else { "tsgo" }
+    if file.ends_with(".py") {
+        "basedpyright"
+    } else if file.ends_with(".dart") {
+        "dart"
+    } else if file.ends_with(".rs") {
+        "rust-analyzer"
+    } else if file.ends_with(".cs") {
+        "csharp-ls"
+    } else {
+        "tsgo"
+    }
 }
 fn refactor_backend(file: &str) -> &'static str {
-    if file.ends_with(".py") { "basedpyright" }
-    else if file.ends_with(".dart") { "dart" }
-    else if file.ends_with(".rs") { "rust-analyzer" }
-    else if file.ends_with(".cs") { "csharp-ls" }
-    else { "vtsls" }
+    if file.ends_with(".py") {
+        "basedpyright"
+    } else if file.ends_with(".dart") {
+        "dart"
+    } else if file.ends_with(".rs") {
+        "rust-analyzer"
+    } else if file.ends_with(".cs") {
+        "csharp-ls"
+    } else {
+        "vtsls"
+    }
 }
 
 struct Server {
@@ -139,10 +151,23 @@ fn warmup_references(
 
 fn kind_name(k: u64) -> &'static str {
     match k {
-        1 => "File", 2 => "Module", 3 => "Namespace", 4 => "Package", 5 => "Class",
-        6 => "Method", 7 => "Property", 8 => "Field", 9 => "Constructor", 10 => "Enum",
-        11 => "Interface", 12 => "Function", 13 => "Variable", 14 => "Constant",
-        23 => "Struct", 26 => "TypeParameter", _ => "Symbol",
+        1 => "File",
+        2 => "Module",
+        3 => "Namespace",
+        4 => "Package",
+        5 => "Class",
+        6 => "Method",
+        7 => "Property",
+        8 => "Field",
+        9 => "Constructor",
+        10 => "Enum",
+        11 => "Interface",
+        12 => "Function",
+        13 => "Variable",
+        14 => "Constant",
+        23 => "Struct",
+        26 => "TypeParameter",
+        _ => "Symbol",
     }
 }
 
@@ -164,7 +189,11 @@ fn sym_pos(s: &Value) -> (u64, u64) {
 fn flatten_symbols(symbols: &[Value], prefix: &str, out: &mut Vec<(String, u64, u64, u64)>) {
     for s in symbols {
         let name = s["name"].as_str().unwrap_or("");
-        let fp = if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") };
+        let fp = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
         let (l, c) = sym_pos(s);
         let kind = s["kind"].as_u64().unwrap_or(0);
         out.push((fp.clone(), kind, l, c));
@@ -186,7 +215,12 @@ fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String>
 
 // Resolve a posição do símbolo SEMANTICAMENTE (documentSymbol); fallback textual (locate).
 // `name_path` aceita "Classe/metodo" além de "Simbolo".
-fn resolve_pos(client: &LspClient, abs: &str, name_path: &str, line: Option<u64>) -> Result<(u64, u64), String> {
+fn resolve_pos(
+    client: &LspClient,
+    abs: &str,
+    name_path: &str,
+    line: Option<u64>,
+) -> Result<(u64, u64), String> {
     if line.is_none() {
         if let Ok(syms) = document_symbols(client, abs) {
             let mut flat = vec![];
@@ -197,7 +231,10 @@ fn resolve_pos(client: &LspClient, abs: &str, name_path: &str, line: Option<u64>
                 .iter()
                 .find(|(fp, ..)| fp == name_path)
                 .or_else(|| flat.iter().find(|(fp, ..)| fp.ends_with(&suffix)))
-                .or_else(|| flat.iter().find(|(fp, ..)| fp.rsplit('/').next() == Some(last)));
+                .or_else(|| {
+                    flat.iter()
+                        .find(|(fp, ..)| fp.rsplit('/').next() == Some(last))
+                });
             if let Some((_, _, l, c)) = hit {
                 // O documentSymbol às vezes aponta pro início da declaração (ex.: 'export'),
                 // não pro identificador. Refina a coluna localizando o nome NA linha resolvida.
@@ -219,7 +256,11 @@ fn pos_to_offset(text: &str, line: u64, ch: u64) -> usize {
     let mut off = 0usize;
     for (i, l) in text.split_inclusive('\n').enumerate() {
         if i as u64 == line {
-            let bidx = l.char_indices().nth(ch as usize).map(|(b, _)| b).unwrap_or(l.len());
+            let bidx = l
+                .char_indices()
+                .nth(ch as usize)
+                .map(|(b, _)| b)
+                .unwrap_or(l.len());
             return off + bidx;
         }
         off += l.len();
@@ -231,8 +272,16 @@ fn apply_text_edits(text: &str, edits: &[Value]) -> String {
     let mut spans: Vec<(usize, usize, String)> = edits
         .iter()
         .map(|e| {
-            let s = pos_to_offset(text, e["range"]["start"]["line"].as_u64().unwrap_or(0), e["range"]["start"]["character"].as_u64().unwrap_or(0));
-            let en = pos_to_offset(text, e["range"]["end"]["line"].as_u64().unwrap_or(0), e["range"]["end"]["character"].as_u64().unwrap_or(0));
+            let s = pos_to_offset(
+                text,
+                e["range"]["start"]["line"].as_u64().unwrap_or(0),
+                e["range"]["start"]["character"].as_u64().unwrap_or(0),
+            );
+            let en = pos_to_offset(
+                text,
+                e["range"]["end"]["line"].as_u64().unwrap_or(0),
+                e["range"]["end"]["character"].as_u64().unwrap_or(0),
+            );
             (s, en, e["newText"].as_str().unwrap_or("").to_string())
         })
         .collect();
@@ -250,14 +299,18 @@ fn edits_by_file(edit: &Value) -> HashMap<String, Vec<Value>> {
     let mut map: HashMap<String, Vec<Value>> = HashMap::new();
     if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
         for (uri, arr) in changes {
-            map.entry(uri_to_path(uri)).or_default().extend(arr.as_array().cloned().unwrap_or_default());
+            map.entry(uri_to_path(uri))
+                .or_default()
+                .extend(arr.as_array().cloned().unwrap_or_default());
         }
     }
     if let Some(dc) = edit.get("documentChanges").and_then(|c| c.as_array()) {
         for change in dc {
             if let Some(arr) = change.get("edits").and_then(|e| e.as_array()) {
                 let uri = change["textDocument"]["uri"].as_str().unwrap_or("");
-                map.entry(uri_to_path(uri)).or_default().extend(arr.iter().cloned());
+                map.entry(uri_to_path(uri))
+                    .or_default()
+                    .extend(arr.iter().cloned());
             }
         }
     }
@@ -338,7 +391,89 @@ fn creates_from(edit: &Value) -> Vec<String> {
 
 // NÚCLEO da segurança: dado um WorkspaceEdit, simula EM MEMÓRIA, mede net_delta e aplica/reverte.
 // Compartilhado por rename, extract_function e move_symbol. Suporta arquivos novos (CreateFile).
-fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Value, String> {
+// ---- validação de BUILD (Fase 5) ---------------------------------------
+// Fecha o buraco do net_delta em memória: erros que só o build externo pega (ex.: rust-analyzer
+// não vê `cargo check`, que lê o disco). Roda o checker da linguagem NO DISCO após aplicar.
+
+fn build_lang(file: &str) -> &'static str {
+    if file.ends_with(".rs") {
+        "rust"
+    } else if file.ends_with(".dart") {
+        "dart"
+    } else if file.ends_with(".cs") {
+        "csharp"
+    } else if file.ends_with(".py") {
+        "python"
+    } else {
+        "typescript"
+    }
+}
+
+// comando de check por linguagem (override por env <LANG>_CHECK_CMD, ex.: RUST_CHECK_CMD)
+fn build_cmd(lang: &str) -> Option<(String, Vec<String>)> {
+    let (env_key, default): (&str, Option<(&str, Vec<&str>)>) = match lang {
+        "rust" => (
+            "RUST_CHECK_CMD",
+            Some(("cargo", vec!["check", "--quiet", "--message-format=short"])),
+        ),
+        "dart" => ("DART_CHECK_CMD", Some(("dart", vec!["analyze"]))),
+        "csharp" => (
+            "CSHARP_CHECK_CMD",
+            Some(("dotnet", vec!["build", "--nologo", "-v", "q"])),
+        ),
+        "typescript" => ("TS_CHECK_CMD", None),
+        "python" => ("PY_CHECK_CMD", None),
+        _ => ("", None),
+    };
+    if let Ok(s) = std::env::var(env_key) {
+        let parts: Vec<String> = s.split_whitespace().map(|x| x.to_string()).collect();
+        if !parts.is_empty() {
+            return Some((parts[0].clone(), parts[1..].to_vec()));
+        }
+    }
+    default.map(|(c, a)| {
+        (
+            c.to_string(),
+            a.into_iter().map(|x| x.to_string()).collect(),
+        )
+    })
+}
+
+// roda o checker no diretório do projeto; retorna (ok, amostra de linhas de erro)
+fn build_check(project: &str, lang: &str) -> Result<(bool, Vec<String>), String> {
+    let (cmd, args) = build_cmd(lang).ok_or_else(|| {
+        format!(
+            "sem comando de build p/ '{lang}' (defina {}_CHECK_CMD)",
+            lang.to_uppercase()
+        )
+    })?;
+    let out = std::process::Command::new(&cmd)
+        .args(&args)
+        .current_dir(project)
+        .output()
+        .map_err(|e| format!("falha ao rodar '{cmd}': {e}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let errors: Vec<String> = combined
+        .lines()
+        .filter(|l| l.to_lowercase().contains("error"))
+        .take(20)
+        .map(|l| l.trim().to_string())
+        .collect();
+    Ok((out.status.success() && errors.is_empty(), errors))
+}
+
+fn verify_and_apply(
+    client: &LspClient,
+    edit: &Value,
+    apply: bool,
+    verify_build: bool,
+    project: &str,
+    lang: &str,
+) -> Result<Value, String> {
     let by_file = edits_by_file(edit);
     let creates = creates_from(edit);
     let mut affected: Vec<String> = by_file.keys().cloned().collect();
@@ -364,7 +499,11 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
         originals.insert(f.clone(), orig);
         news.insert(f.clone(), newt);
     }
-    let existing: Vec<String> = affected.iter().filter(|f| Path::new(f).exists()).cloned().collect();
+    let existing: Vec<String> = affected
+        .iter()
+        .filter(|f| Path::new(f).exists())
+        .cloned()
+        .collect();
 
     // diagnostics ANTES — força o server ao baseline do DISCO (did_change com o texto original),
     // evitando estado stale de uma operação anterior no mesmo client (ex.: preview não revertido a tempo).
@@ -392,8 +531,11 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
     let net_delta = introduced.len() as i64 - resolved.len() as i64;
     let safe = net_delta <= 0;
 
-    let applied;
-    let note;
+    let creates_set: std::collections::HashSet<String> = creates.iter().cloned().collect();
+    let mut applied;
+    let mut note;
+    let mut build_ok = Value::Null;
+    let mut build_errors: Vec<String> = vec![];
     if apply && safe {
         for (f, nt) in &news {
             if let Some(parent) = Path::new(f).parent() {
@@ -403,6 +545,37 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
         }
         applied = true;
         note = "aplicado no disco (net_delta<=0)";
+
+        // Fase 5: validação de BUILD no disco (pega erros que a simulação em memória não vê).
+        if verify_build {
+            match build_check(project, lang) {
+                Ok((ok, errs)) => {
+                    build_ok = json!(ok);
+                    build_errors = errs;
+                    if !ok {
+                        // build quebrou -> REVERTE o disco (restaura existentes, remove criados)
+                        for f in &affected {
+                            if creates_set.contains(f) {
+                                let _ = std::fs::remove_file(f);
+                            } else {
+                                let _ = std::fs::write(f, &originals[f]);
+                            }
+                            if Path::new(f).exists() {
+                                client.did_change(f, &originals[f]);
+                            } else {
+                                client.close(f);
+                            }
+                        }
+                        applied = false;
+                        note = "REVERTIDO: net_delta passou mas o build falhou (ex.: erro que só o cargo check vê)";
+                    }
+                }
+                Err(e) => {
+                    build_ok = json!(null);
+                    build_errors = vec![format!("build-check indisponível: {e}")];
+                }
+            }
+        }
     } else {
         // reverte o estado do server (não escreve disco): existentes voltam; novos fecham
         for f in &affected {
@@ -430,13 +603,19 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
         "blast_radius": {"files": files_n, "edits": edits_n},
         "creates": creates.iter().map(|c| rel(&root, &path_to_uri(c))).collect::<Vec<_>>(),
         "changes": per_file,
+        "build_ok": build_ok,
+        "build_errors": build_errors,
         "note": note,
     }))
 }
 
 fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
-    let project = a["project"].as_str().ok_or("faltou 'project' (caminho absoluto)")?;
-    let file = a["file"].as_str().ok_or("faltou 'file' (relativo ao project)")?;
+    let project = a["project"]
+        .as_str()
+        .ok_or("faltou 'project' (caminho absoluto)")?;
+    let file = a["file"]
+        .as_str()
+        .ok_or("faltou 'file' (relativo ao project)")?;
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
     let client = srv.client(project, nav_backend(file))?;
@@ -537,7 +716,14 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
             }))
         }
     };
-    let mut result = verify_and_apply(&client, &edit, apply)?;
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
     result["operation"] = json!("rename_symbol");
     result["symbol"] = json!(symbol);
     result["new_name"] = json!(new_name);
@@ -568,11 +754,17 @@ fn refactor_edit(
         std::thread::sleep(Duration::from_millis(300));
     }
     if actions.is_empty() {
-        return Err(format!("nenhum refactoring '{kind}' disponível nesta posição/seleção"));
+        return Err(format!(
+            "nenhum refactoring '{kind}' disponível nesta posição/seleção"
+        ));
     }
     // escolhe por título preferido, senão a 1ª
     let chosen = prefer_title
-        .and_then(|t| actions.iter().find(|a| a["title"].as_str().map(|s| s.contains(t)).unwrap_or(false)))
+        .and_then(|t| {
+            actions
+                .iter()
+                .find(|a| a["title"].as_str().map(|s| s.contains(t)).unwrap_or(false))
+        })
         .or_else(|| actions.first())
         .cloned()
         .unwrap();
@@ -582,27 +774,53 @@ fn refactor_edit(
     } else {
         client.request("codeAction/resolve", chosen, 10_000)?
     };
-    action.get("edit").cloned().filter(|e| !e.is_null()).ok_or_else(|| "refactoring não produziu edit".to_string())
+    action
+        .get("edit")
+        .cloned()
+        .filter(|e| !e.is_null())
+        .ok_or_else(|| "refactoring não produziu edit".to_string())
 }
 
 fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
-    let start_line = a["start_line"].as_u64().ok_or("faltou 'start_line' (1-indexed)")?;
-    let end_line = a["end_line"].as_u64().ok_or("faltou 'end_line' (1-indexed)")?;
+    let start_line = a["start_line"]
+        .as_u64()
+        .ok_or("faltou 'start_line' (1-indexed)")?;
+    let end_line = a["end_line"]
+        .as_u64()
+        .ok_or("faltou 'end_line' (1-indexed)")?;
     let apply = a["apply"].as_bool().unwrap_or(false);
     let client = srv.client(project, refactor_backend(file))?; // vtsls tem os refactorings
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("ler {abs}: {e}"))?;
     let lines: Vec<&str> = text.split('\n').collect();
-    let end_col = a["end_col"].as_u64().unwrap_or_else(|| lines.get((end_line - 1) as usize).map(|l| l.chars().count() as u64).unwrap_or(0));
+    let end_col = a["end_col"].as_u64().unwrap_or_else(|| {
+        lines
+            .get((end_line - 1) as usize)
+            .map(|l| l.chars().count() as u64)
+            .unwrap_or(0)
+    });
     let start_col = a["start_col"].as_u64().unwrap_or(0);
     let range = json!({"start":{"line":start_line-1,"character":start_col},"end":{"line":end_line-1,"character":end_col}});
     let uri = path_to_uri(&abs);
     // prefere extração para o escopo do módulo (função nomeada no topo)
-    let edit = refactor_edit(&client, &uri, &range, "refactor.extract.function", Some("module scope"))?;
-    let mut result = verify_and_apply(&client, &edit, apply)?;
+    let edit = refactor_edit(
+        &client,
+        &uri,
+        &range,
+        "refactor.extract.function",
+        Some("module scope"),
+    )?;
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
     result["operation"] = json!("extract_function");
     Ok(result)
 }
@@ -620,7 +838,14 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let range = json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c}});
     let uri = path_to_uri(&abs);
     let edit = refactor_edit(&client, &uri, &range, "refactor.move", Some("new file"))?;
-    let mut result = verify_and_apply(&client, &edit, apply)?;
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
     result["operation"] = json!("move_symbol");
     result["symbol"] = json!(symbol);
     Ok(result)
@@ -644,7 +869,9 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
 fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
-    let name_path = a["name_path"].as_str().ok_or("faltou 'name_path' (ex.: 'Widget' ou 'Widget/render')")?;
+    let name_path = a["name_path"]
+        .as_str()
+        .ok_or("faltou 'name_path' (ex.: 'Widget' ou 'Widget/render')")?;
     let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     let syms = document_symbols(&client, &abs)?;
@@ -664,7 +891,11 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let query = a["query"].as_str().ok_or("faltou 'query'")?;
     // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts)
-    let backend = if a["lang"].as_str() == Some("python") { "basedpyright" } else { "tsgo" };
+    let backend = if a["lang"].as_str() == Some("python") {
+        "basedpyright"
+    } else {
+        "tsgo"
+    };
     let client = srv.client(project, backend)?;
     let res = client.request("workspace/symbol", json!({"query": query}), 10_000)?;
     let root = client.root().to_string();
@@ -701,7 +932,9 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     )?;
     let item = prep.as_array().and_then(|a| a.first()).cloned();
     let Some(item) = item else {
-        return Ok(json!({"symbol": symbol, "incoming": [], "detail": "sem item de call hierarchy nesta posição"}));
+        return Ok(
+            json!({"symbol": symbol, "incoming": [], "detail": "sem item de call hierarchy nesta posição"}),
+        );
     };
     let incoming = client.request("callHierarchy/incomingCalls", json!({"item": item}), 10_000)?;
     let root = client.root().to_string();
@@ -719,6 +952,19 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
         })
         .collect();
     Ok(json!({"symbol": symbol, "incoming_count": callers.len(), "incoming": callers}))
+}
+
+// Fase 5: roda o build/check da linguagem NO DISCO e reporta erros (pega o que a simulação
+// em memória não vê — ex.: erros de `cargo check` no Rust). Standalone: chame após um apply.
+fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let lang = a["lang"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| a["file"].as_str().map(|f| build_lang(f).to_string()))
+        .ok_or("faltou 'lang' ou 'file'")?;
+    let (ok, errors) = build_check(project, &lang)?;
+    Ok(json!({"lang": lang, "build_ok": ok, "errors": errors}))
 }
 
 fn tools_schema() -> Value {
@@ -748,6 +994,7 @@ fn tools_schema() -> Value {
                     "symbol": {"type": "string", "description": "nome ou name_path (ex.: 'ZodType' ou 'Widget/render')"},
                     "new_name": {"type": "string"},
                     "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build da linguagem após aplicar e REVERTE se falhar (pega erros que o net_delta em memória não vê, ex.: cargo check)"},
                     "line": {"type": "integer", "description": "opcional: linha 1-indexed"}
                 },
                 "required": ["project", "file", "symbol", "new_name"]
@@ -810,7 +1057,8 @@ fn tools_schema() -> Value {
                     "end_line": {"type": "integer", "description": "1-indexed"},
                     "start_col": {"type": "integer", "description": "opcional, 0-indexed"},
                     "end_col": {"type": "integer", "description": "opcional, 0-indexed (default: fim da linha)"},
-                    "apply": {"type": "boolean"}
+                    "apply": {"type": "boolean"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
                 },
                 "required": ["project", "file", "start_line", "end_line"]
             }
@@ -824,9 +1072,23 @@ fn tools_schema() -> Value {
                     "project": {"type": "string"}, "file": {"type": "string"},
                     "symbol": {"type": "string"},
                     "line": {"type": "integer", "description": "opcional: linha 1-indexed"},
-                    "apply": {"type": "boolean"}
+                    "apply": {"type": "boolean"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
                 },
                 "required": ["project", "file", "symbol"]
+            }
+        },
+        {
+            "name": "validate_build",
+            "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Comando por linguagem, override via env <LANG>_CHECK_CMD.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "file": {"type": "string", "description": "para inferir a linguagem"},
+                    "lang": {"type": "string", "description": "rust|dart|csharp|typescript|python (alternativa a 'file')"}
+                },
+                "required": ["project"]
             }
         }
     ])
@@ -842,24 +1104,152 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         "call_hierarchy" => tool_call_hierarchy(srv, args),
         "extract_function" => tool_extract_function(srv, args),
         "move_symbol" => tool_move_symbol(srv, args),
+        "validate_build" => tool_validate_build(srv, args),
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
     match res {
-        Ok(v) => json!({"content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}]}),
-        Err(e) => json!({"content":[{"type":"text","text": format!("ERRO: {e}")}], "isError": true}),
+        Ok(v) => {
+            json!({"content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}]})
+        }
+        Err(e) => {
+            json!({"content":[{"type":"text","text": format!("ERRO: {e}")}], "isError": true})
+        }
     }
 }
 
-fn main() {
-    let srv = Server {
+fn build_server() -> Server {
+    Server {
         clients: Mutex::new(HashMap::new()),
         tsgo_bin: std::env::var("TSGO_BIN").unwrap_or_else(|_| "tsgo".to_string()),
         vtsls_bin: std::env::var("VTSLS_BIN").unwrap_or_else(|_| "vtsls".to_string()),
-        basedpyright_bin: std::env::var("BASEDPYRIGHT_BIN").unwrap_or_else(|_| "basedpyright-langserver".to_string()),
+        basedpyright_bin: std::env::var("BASEDPYRIGHT_BIN")
+            .unwrap_or_else(|_| "basedpyright-langserver".to_string()),
         dart_bin: std::env::var("DART_BIN").unwrap_or_else(|_| "dart".to_string()),
-        rust_analyzer_bin: std::env::var("RUST_ANALYZER_BIN").unwrap_or_else(|_| "rust-analyzer".to_string()),
+        rust_analyzer_bin: std::env::var("RUST_ANALYZER_BIN")
+            .unwrap_or_else(|_| "rust-analyzer".to_string()),
         csharp_ls_bin: std::env::var("CSHARP_LS_BIN").unwrap_or_else(|_| "csharp-ls".to_string()),
+    }
+}
+
+// ---- CACHE ENTRE SESSÕES (Fase 5, opt-in via CODE_INTEL_DAEMON=1) -------
+// Problema: o Claude Code recria o processo MCP a cada sessão, matando os LSPs quentes -> paga o
+// cold-start (rust-analyzer ~30s, csharp-ls ~24s) de novo. Solução: um DAEMON separado, dono dos
+// LSPs, que sobrevive ao restart do MCP. O MCP vira um proxy fino sobre um Unix socket.
+// (Seguro porque o freshness re-sincroniza arquivos mudados no disco entre sessões.)
+
+fn sock_path() -> String {
+    std::env::var("CODE_INTEL_SOCK").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "tmp".into());
+        format!("/tmp/code-intel-mcp{}.sock", home.replace('/', "_"))
+    })
+}
+
+fn run_daemon() {
+    let srv = Arc::new(build_server());
+    let path = sock_path();
+    let _ = std::fs::remove_file(&path);
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind unix socket");
+    // watchdog: encerra após 30min ocioso (sem conexões)
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let last = Arc::new(Mutex::new(Instant::now()));
+    {
+        let (active, last) = (active.clone(), last.clone());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            if active.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && last.lock().unwrap().elapsed() > Duration::from_secs(1800)
+            {
+                std::process::exit(0);
+            }
+        });
+    }
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        let (srv, active, last) = (srv.clone(), active.clone(), last.clone());
+        std::thread::spawn(move || {
+            active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            handle_daemon_conn(stream, &srv);
+            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            *last.lock().unwrap() = Instant::now();
+        });
+    }
+}
+
+fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
+    let reader = std::io::BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+    let mut w = stream;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let id = msg.get("id").cloned();
+        let name = msg["params"]["name"].as_str().unwrap_or("").to_string();
+        let args = msg["params"]["arguments"].clone();
+        let result = call_tool(srv, &name, &args);
+        let resp = json!({"jsonrpc":"2.0","id":id,"result":result});
+        if writeln!(w, "{}", serde_json::to_string(&resp).unwrap()).is_err() {
+            break;
+        }
+        let _ = w.flush();
+    }
+}
+
+// no MCP: encaminha um tools/call ao daemon (sobe o daemon se necessário)
+fn forward_call(name: &str, args: &Value) -> Value {
+    let path = sock_path();
+    if std::os::unix::net::UnixStream::connect(&path).is_err() {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe)
+                .arg("--daemon")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        let start = Instant::now();
+        while std::os::unix::net::UnixStream::connect(&path).is_err()
+            && start.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let err = |m: &str| json!({"content":[{"type":"text","text": format!("ERRO: {m}")}], "isError": true});
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&path) else {
+        return err("daemon indisponível");
     };
+    let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
+    if writeln!(stream, "{}", serde_json::to_string(&req).unwrap()).is_err() {
+        return err("falha ao enviar ao daemon");
+    }
+    let _ = stream.flush();
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_ok() {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            return v
+                .get("result")
+                .cloned()
+                .unwrap_or_else(|| err("resposta vazia do daemon"));
+        }
+    }
+    err("falha ao ler do daemon")
+}
+
+fn main() {
+    if std::env::args().any(|a| a == "--daemon") {
+        run_daemon();
+        return;
+    }
+    // opt-in: encaminha as operações ao daemon (índice quente sobrevive entre sessões)
+    let use_daemon = std::env::var("CODE_INTEL_DAEMON").is_ok();
+    let srv = build_server();
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -885,7 +1275,10 @@ fn main() {
 
         let result: Option<Value> = match method {
             "initialize" => {
-                let pv = msg["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05").to_string();
+                let pv = msg["params"]["protocolVersion"]
+                    .as_str()
+                    .unwrap_or("2024-11-05")
+                    .to_string();
                 Some(json!({
                     "protocolVersion": pv,
                     "capabilities": {"tools": {}},
@@ -896,7 +1289,11 @@ fn main() {
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or("");
                 let args = msg["params"]["arguments"].clone();
-                Some(call_tool(&srv, name, &args))
+                Some(if use_daemon {
+                    forward_call(name, &args)
+                } else {
+                    call_tool(&srv, name, &args)
+                })
             }
             "ping" => Some(json!({})),
             _ => None,
@@ -907,7 +1304,9 @@ fn main() {
         }
         let resp = match result {
             Some(r) => json!({"jsonrpc":"2.0","id":id,"result":r}),
-            None => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("método não suportado: {method}")}}),
+            None => {
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("método não suportado: {method}")}})
+            }
         };
         let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap());
         let _ = out.flush();
