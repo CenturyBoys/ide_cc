@@ -31,8 +31,8 @@ mudança correta**.
 | **2. Edição segura** | apply→verify com net_delta | ✅ **concluída** |
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
-| **4. Multi-linguagem** | **Python ✅ · Dart ✅ · Rust ✅** → depois C# | 🟡 **em curso** |
-| **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM | ⬜ pendente |
+| **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
+| **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM, **validação build/test** | ⬜ **próxima** |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
 
@@ -66,7 +66,20 @@ mudança correta**.
 - **Limitação documentada:** net_delta em memória vê diagnostics NATIVOS, não os do `cargo check`
   (flycheck lê disco). Segurança total em Rust exige a Fase de validação (build/test) pós-apply.
 
-Próximo dentro da Fase 4: C# (Roslyn LS) — **requer instalar dotnet SDK** (ausente no ambiente).
+### Fase 4 — C#: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-csharp`. .NET SDK 10.0.401 (dotnet-install) + csharp-ls 0.28.0 (Roslyn, dotnet
+tool). Provado em `fixtures/cs-demo` (requer `DOTNET_ROOT`):
+- find_references: **503, stable** — não trunca (bloqueia ~13-24s na carga MSBuild+Roslyn). Run 010.
+- document_symbols, rename preview (net_delta 0) — OK.
+- rename `Account→Factory` apply=true → **net_delta 505, bloqueado** (Roslyn detecta colisão em memória).
+- Roslyn analisa **em memória** (vê didChange) → net_delta confiável (≠ Rust/cargo check).
+
+### Fase 4 — CONCLUÍDA: 5/5 linguagens
+
+TypeScript (tsgo/vtsls) · Python (basedpyright) · Dart · Rust (rust-analyzer) · C# (csharp-ls).
+A camada é comprovadamente **agnóstica**: cada linguagem = 1 backend + matches em
+`lang_id`/`nav_backend`/`refactor_backend`. Runs 007–010 no RESULTS.md.
 
 ### Reforço do design (transversal, 4 linguagens medidas)
 

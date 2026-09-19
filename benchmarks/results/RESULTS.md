@@ -361,6 +361,33 @@ validação (run build/test)** pós-apply é necessária — já prevista no roa
 
 ---
 
+## Run 010 — csharp-ls @ cs-demo (Fase 4: C#)
+
+- **Data:** 2026-09-18
+- **Setup:** .NET SDK 10.0.401 (dotnet-install LTS) + `dotnet tool install --global csharp-ls` + `node gen-csproject.mjs --tfm net10.0`
+- **Comando:** `DOTNET_ROOT=~/.dotnet node lsp-bench.mjs --server csharp-ls --fixture ../../fixtures/cs-demo --file Models.cs --search "class Account" --symbol Account --newname Ledger`
+- **Server:** csharp-ls 0.28.0 (Roslyn, MIT, dotnet tool)
+- **Fixture:** projeto C#, 20 módulos, ~503 refs a `Account`
+
+| Métrica | Valor |
+|---|---|
+| cold-start (handshake) | 3907 ms |
+| find_references — 1ª resposta | **503 refs @ 24365 ms** (bloqueia até carregar MSBuild+Roslyn) |
+| find_references — estável | 503 refs @ 25923 ms |
+| **Truncou?** | **Não** (bloqueia até completo) |
+| find_references warm p50 / p95 | 67 / 109 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 503 edições, **3560 ms** (Roslyn é mais pesado no rename) |
+
+### Leitura
+
+csharp-ls (Roslyn) **não trunca** — bloqueia até a carga da solution/MSBuild (~24 s de cold),
+depois retorna completo. Warm rápido para navegação (67 ms); rename Roslyn é mais lento (3,5 s).
+Requer **.NET SDK** e `DOTNET_ROOT` apontando pra ele. Diferente do Rust, os diagnostics do Roslyn
+são **em memória** (veem o `didChange`), então o **net_delta é confiável** (colisão detectada:
+505 erros, bloqueado — ver `mcp/README.md`).
+
+---
+
 ## Template para novas runs
 
 ```

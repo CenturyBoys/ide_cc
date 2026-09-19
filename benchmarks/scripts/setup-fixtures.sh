@@ -62,4 +62,10 @@ fi
 echo ">> gerando crate Rust sintético (20 módulos)..."
 node "$ROOT/benchmarks/scripts/gen-rustproject.mjs" --modules 20 --refs 8 --out "$FIX/rust-demo"
 
+# --- projeto C# sintético (Fase 4: csharp-ls/Roslyn) --------------------
+CS_TFM="${CS_TFM:-net10.0}"
+echo ">> gerando projeto C# sintético (20 módulos, TFM $CS_TFM)..."
+node "$ROOT/benchmarks/scripts/gen-csproject.mjs" --modules 20 --refs 8 --tfm "$CS_TFM" --out "$FIX/cs-demo"
+echo "   (C# requer .NET SDK + 'dotnet tool install --global csharp-ls'; ajuste CS_TFM ao SDK instalado)"
+
 echo ">> fixtures prontos em $FIX"

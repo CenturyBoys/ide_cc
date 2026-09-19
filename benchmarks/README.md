@@ -97,5 +97,9 @@ como o tsgo), cold-start 291 ms em pacote puro. Rode `dart pub get` no fixture a
 **Rust (Fase 4):** `rust-analyzer` medido em `rust-demo` (Run 009) — server **mais pesado**
 (cold ~30s: cargo metadata+check), **trunca** 0→524. `rustup component add rust-analyzer`.
 
-Próximos: memória residente por server; monorepo maior (100+ pacotes); C# (requer dotnet);
-comparar `ty` (Rust) vs basedpyright; divergência tsgo(64) vs vtsls(55) no zod.
+**C# (Fase 4):** `csharp-ls` (Roslyn) medido em `cs-demo` (Run 010) — não trunca, cold ~24s (carga
+MSBuild). Requer .NET SDK + `dotnet tool install --global csharp-ls` + `DOTNET_ROOT`.
+
+**Fase 4 completa (5/5):** tsgo/vtsls · basedpyright · dart · rust-analyzer · csharp-ls (Runs 001-010).
+Próximos: memória residente por server; monorepo maior (100+ pacotes); comparar `ty` (Rust) vs
+basedpyright; divergência tsgo(64) vs vtsls(55) no zod.

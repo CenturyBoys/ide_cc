@@ -43,6 +43,7 @@ mantendo **um processo por (projeto × backend)**, tudo persistente:
 | Python (`.py`) | **basedpyright** | basedpyright |
 | Dart (`.dart`) | **dart language-server** (não trunca) | dart |
 | Rust (`.rs`) | **rust-analyzer** (cold ~30s, trunca; gate 60s) | rust-analyzer |
+| C# (`.cs`) | **csharp-ls** (Roslyn; cold ~24s, não trunca) | csharp-ls |
 
 Adicionar uma linguagem = um backend novo + um match em `nav_backend`/`refactor_backend`.
 
@@ -135,6 +136,19 @@ Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSL
 > **Nota Rust:** o `net_delta` captura diagnostics **nativos** do rust-analyzer, mas **não** os que
 > só o `cargo check` (flycheck) reporta — ele lê do disco e não vê a simulação em memória. Para
 > segurança total em Rust, use a validação pós-apply (`cargo check`/testes), prevista na Fase 5.
+
+**C#** (csharp-ls / Roslyn) — [`test-csharp.jsonl`](test-csharp.jsonl), precisa de **.NET SDK**,
+`DOTNET_ROOT`, `CSHARP_LS_BIN` (`dotnet tool install --global csharp-ls`):
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ cs-demo | **503 refs, stable** — gate cobriu ~13s de carga MSBuild+Roslyn |
+| `document_symbols` | Namespace, Account(Class), Value(Field), Balance()(Method), Factory(Class) |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/503 edições |
+| `rename(Account→Factory, apply=true)` | **applied=false, net_delta=505** — Roslyn (em memória) detecta a colisão |
+
+> Ao contrário do Rust, o Roslyn analisa **em memória** (vê o `didChange`), então o `net_delta`
+> é confiável para C#.
 
 ## Arquitetura (Fases 1–2)
 

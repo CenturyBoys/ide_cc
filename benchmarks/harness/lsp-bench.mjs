@@ -42,6 +42,7 @@ const SERVERS = {
   basedpyright: { cmd: join(__dirname, 'node_modules/.bin/basedpyright-langserver'), args: ['--stdio'] },
   dart: { cmd: 'dart', args: ['language-server'] },
   'rust-analyzer': { cmd: `${process.env.HOME}/.cargo/bin/rust-analyzer`, args: [] },
+  'csharp-ls': { cmd: `${process.env.HOME}/.dotnet/tools/csharp-ls`, args: [] },
 };
 
 // languageId do LSP a partir da extensão (o harness é multi-linguagem agora)
@@ -49,6 +50,7 @@ function langId(file) {
   if (file.endsWith('.py')) return 'python';
   if (file.endsWith('.dart')) return 'dart';
   if (file.endsWith('.rs')) return 'rust';
+  if (file.endsWith('.cs')) return 'csharp';
   if (file.endsWith('.tsx')) return 'typescriptreact';
   if (file.endsWith('.jsx')) return 'javascriptreact';
   if (file.endsWith('.js') || file.endsWith('.mjs')) return 'javascript';
