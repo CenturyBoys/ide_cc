@@ -42,14 +42,21 @@ roteamento por linguagem × operação.
 
 ### 1. O binário `code-intel-mcp`
 
-**Opção A — baixar o release** (recomendado):
+**Opção A — instalador** (recomendado): detecta sua plataforma, baixa o binário e checa os
+language servers.
+```bash
+curl -fsSL https://raw.githubusercontent.com/CenturyBoys/ide_cc/main/install.sh | bash
+# opções: BIN_DIR=~/.local/bin  VERSION=v0.3.0  WRITE_MCP=1 (escreve um .mcp.json no diretório atual)
+```
+
+**Opção B — baixar o binário manualmente:**
 ```bash
 # Linux x86_64 (troque pelo seu alvo em github.com/CenturyBoys/ide_cc/releases)
 curl -fsSL https://github.com/CenturyBoys/ide_cc/releases/latest/download/code-intel-mcp-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz -C ~/.local/bin
 ```
 
-**Opção B — compilar do fonte** (precisa de Rust):
+**Opção C — compilar do fonte** (precisa de Rust):
 ```bash
 git clone https://github.com/CenturyBoys/ide_cc && cd REPO
 cargo build --release --manifest-path mcp/Cargo.toml
