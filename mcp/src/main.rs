@@ -18,11 +18,13 @@ use std::time::{Duration, Instant};
 fn nav_backend(file: &str) -> &'static str {
     if file.ends_with(".py") { "basedpyright" }
     else if file.ends_with(".dart") { "dart" }
+    else if file.ends_with(".rs") { "rust-analyzer" }
     else { "tsgo" }
 }
 fn refactor_backend(file: &str) -> &'static str {
     if file.ends_with(".py") { "basedpyright" }
     else if file.ends_with(".dart") { "dart" }
+    else if file.ends_with(".rs") { "rust-analyzer" }
     else { "vtsls" }
 }
 
@@ -32,6 +34,7 @@ struct Server {
     vtsls_bin: String,
     basedpyright_bin: String,
     dart_bin: String,
+    rust_analyzer_bin: String,
 }
 
 impl Server {
@@ -45,6 +48,7 @@ impl Server {
             "vtsls" => (&self.vtsls_bin, vec!["--stdio"]),
             "basedpyright" => (&self.basedpyright_bin, vec!["--stdio"]),
             "dart" => (&self.dart_bin, vec!["language-server"]),
+            "rust-analyzer" => (&self.rust_analyzer_bin, vec![]),
             _ => (&self.tsgo_bin, vec!["--lsp", "-stdio"]),
         };
         let c = LspClient::start(cmd, &args, project)?;
@@ -94,14 +98,23 @@ fn warmup_references(
     let mut stable_hits = 0u32;
     let mut polls = 0u32;
     let mut refs: Vec<Value> = vec![];
-    while start.elapsed().as_millis() < 20_000 {
+    // 60s: rust-analyzer roda cargo metadata + check no cold start (~30s no fixture medido).
+    while start.elapsed().as_millis() < 60_000 {
         polls += 1;
-        let res = client.request(
+        // rust-analyzer LANÇA erro ('No references found at position') enquanto indexa;
+        // tratamos como "ainda não pronto" e re-tentamos, em vez de propagar.
+        let res = match client.request(
             "textDocument/references",
             json!({"textDocument":{"uri":uri},"position":{"line":line,"character":ch},
                    "context":{"includeDeclaration":true}}),
             15_000,
-        )?;
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(300));
+                continue;
+            }
+        };
         refs = res.as_array().cloned().unwrap_or_default();
         let count = refs.len() as i64;
         if count == last && count > 0 {
@@ -271,9 +284,12 @@ fn collect_errors(client: &LspClient, files: &[String], min_gen: u64) -> BTreeSe
         }
         return s;
     }
-    // PUSH: espera um publish após min_gen, depois a estabilidade do conjunto de erros
+    // PUSH: espera um publish após min_gen, depois a estabilidade do conjunto de erros.
+    // NOTA: captura diagnostics NATIVOS do server (que veem o didChange em memória). Erros que só
+    // aparecem via build externo (ex.: rust-analyzer/`cargo check`, que lê o DISCO) NÃO são vistos
+    // na simulação em memória — para esses, a Fase de validação (run build/test) é necessária.
     let start = Instant::now();
-    while client.diag_gen() <= min_gen && start.elapsed().as_millis() < 2500 {
+    while client.diag_gen() <= min_gen && start.elapsed().as_millis() < 3000 {
         std::thread::sleep(Duration::from_millis(80));
     }
     let read = |c: &LspClient| {
@@ -291,7 +307,7 @@ fn collect_errors(client: &LspClient, files: &[String], min_gen: u64) -> BTreeSe
     loop {
         std::thread::sleep(Duration::from_millis(350));
         let cur = read(client);
-        if cur == prev || start.elapsed().as_millis() > 6000 {
+        if cur == prev || start.elapsed().as_millis() > 8000 {
             return cur;
         }
         prev = cur;
@@ -837,6 +853,7 @@ fn main() {
         vtsls_bin: std::env::var("VTSLS_BIN").unwrap_or_else(|_| "vtsls".to_string()),
         basedpyright_bin: std::env::var("BASEDPYRIGHT_BIN").unwrap_or_else(|_| "basedpyright-langserver".to_string()),
         dart_bin: std::env::var("DART_BIN").unwrap_or_else(|_| "dart".to_string()),
+        rust_analyzer_bin: std::env::var("RUST_ANALYZER_BIN").unwrap_or_else(|_| "rust-analyzer".to_string()),
     };
 
     let stdin = std::io::stdin();

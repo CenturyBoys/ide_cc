@@ -42,6 +42,7 @@ mantendo **um processo por (projeto × backend)**, tudo persistente:
 | TypeScript (`.ts/.tsx/.js`) | **tsgo** (rápido, não trunca) | **vtsls** (tsgo não implementa refactorings) |
 | Python (`.py`) | **basedpyright** | basedpyright |
 | Dart (`.dart`) | **dart language-server** (não trunca) | dart |
+| Rust (`.rs`) | **rust-analyzer** (cold ~30s, trunca; gate 60s) | rust-analyzer |
 
 Adicionar uma linguagem = um backend novo + um match em `nav_backend`/`refactor_backend`.
 
@@ -121,6 +122,19 @@ Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSL
 | `document_symbols` / `call_hierarchy(makeAccount)` | classe+métodos; **20 callers** |
 | `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/503 edições |
 | `rename(Account→makeAccount, apply=true)` | **rejected_by_server** — Dart valida e recusa a colisão na origem |
+
+**Rust** (rust-analyzer) — [`test-rust.jsonl`](test-rust.jsonl), precisa de `RUST_ANALYZER_BIN` (`rustup component add rust-analyzer`):
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ rust-demo | **524 refs, stable** — gate esperou ~22s do cold index (cargo check) |
+| `document_symbols` | Account(Struct), balance(Method), make_account(Function) |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/524 edições |
+| `rename(Account→i64, apply=true)` | **applied=false, net_delta=161** ("expected i64, found i32", nativo) |
+
+> **Nota Rust:** o `net_delta` captura diagnostics **nativos** do rust-analyzer, mas **não** os que
+> só o `cargo check` (flycheck) reporta — ele lê do disco e não vê a simulação em memória. Para
+> segurança total em Rust, use a validação pós-apply (`cargo check`/testes), prevista na Fase 5.
 
 ## Arquitetura (Fases 1–2)
 

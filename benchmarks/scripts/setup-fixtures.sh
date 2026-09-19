@@ -58,4 +58,8 @@ else
   echo "   (dart ausente; rode 'dart pub get' em $FIX/dart-demo antes de usar)"
 fi
 
+# --- crate Rust sintético (Fase 4: rust-analyzer) -----------------------
+echo ">> gerando crate Rust sintético (20 módulos)..."
+node "$ROOT/benchmarks/scripts/gen-rustproject.mjs" --modules 20 --refs 8 --out "$FIX/rust-demo"
+
 echo ">> fixtures prontos em $FIX"

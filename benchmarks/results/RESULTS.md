@@ -327,6 +327,40 @@ basedpyright (lazy). O gate de warmup cobre ambos os casos.
 
 ---
 
+## Run 009 — rust-analyzer @ rust-demo (Fase 4: Rust)
+
+- **Data:** 2026-09-18
+- **Setup:** `node benchmarks/scripts/gen-rustproject.mjs --modules 20 --refs 8` + `rustup component add rust-analyzer`
+- **Comando:** `node lsp-bench.mjs --server rust-analyzer --fixture ../../fixtures/rust-demo --file src/models.rs --search "struct Account" --symbol Account --newname Ledger`
+- **Server:** rust-analyzer 1.96.1 (LSP stdio, MIT/Apache)
+- **Fixture:** crate Rust, 20 módulos, ~523 refs a `Account`
+
+| Métrica | Valor |
+|---|---|
+| cold-start (handshake) | 47 ms |
+| **find_references — 1ª resposta** | **0 refs @ 23 ms** (server lança erro enquanto indexa) |
+| **find_references — estável** | **524 refs @ ~30 s** |
+| **Truncou?** | **SIM — 0 → 524 ao longo de ~30 s** |
+| find_references warm p50 / p95 | 40 / 53 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 524 edições, 51 ms |
+
+### Leitura — o server MAIS pesado de aquecer
+
+O rust-analyzer roda `cargo metadata` + proc-macros + `cargo check` no cold start: leva **~30 s**
+para convergir de 0→524, e **lança erro** (`No references found at position`) enquanto não terminou.
+Reforça ao máximo o design: **servidor persistente + gate de warmup** (pagar 30 s por operação
+seria inviável). Warm é rápido (~40 ms). O gate do MCP foi ajustado: timeout de 60 s + resiliência
+a erro (erro durante indexação = "não pronto", re-tenta).
+
+**Limitação importante (net_delta em Rust):** o rust-analyzer tem 2 fontes de diagnostics — a
+**nativa** (vê o `didChange` em memória) e o **flycheck (`cargo check`)**, que **lê do disco**.
+Como a simulação do `net_delta` é em memória (sem tocar o disco), ela captura os erros **nativos**
+(ex.: rename `Account→i64` → 161 erros "expected i64, found i32", **bloqueado** ✅), mas **não** os
+que só o `cargo check` pega (ex.: import duplicado E0252). Para segurança total em Rust, a **Fase de
+validação (run build/test)** pós-apply é necessária — já prevista no roadmap.
+
+---
+
 ## Template para novas runs
 
 ```
