@@ -19,12 +19,14 @@ fn nav_backend(file: &str) -> &'static str {
     if file.ends_with(".py") { "basedpyright" }
     else if file.ends_with(".dart") { "dart" }
     else if file.ends_with(".rs") { "rust-analyzer" }
+    else if file.ends_with(".cs") { "csharp-ls" }
     else { "tsgo" }
 }
 fn refactor_backend(file: &str) -> &'static str {
     if file.ends_with(".py") { "basedpyright" }
     else if file.ends_with(".dart") { "dart" }
     else if file.ends_with(".rs") { "rust-analyzer" }
+    else if file.ends_with(".cs") { "csharp-ls" }
     else { "vtsls" }
 }
 
@@ -35,6 +37,7 @@ struct Server {
     basedpyright_bin: String,
     dart_bin: String,
     rust_analyzer_bin: String,
+    csharp_ls_bin: String,
 }
 
 impl Server {
@@ -49,6 +52,7 @@ impl Server {
             "basedpyright" => (&self.basedpyright_bin, vec!["--stdio"]),
             "dart" => (&self.dart_bin, vec!["language-server"]),
             "rust-analyzer" => (&self.rust_analyzer_bin, vec![]),
+            "csharp-ls" => (&self.csharp_ls_bin, vec![]),
             _ => (&self.tsgo_bin, vec!["--lsp", "-stdio"]),
         };
         let c = LspClient::start(cmd, &args, project)?;
@@ -854,6 +858,7 @@ fn main() {
         basedpyright_bin: std::env::var("BASEDPYRIGHT_BIN").unwrap_or_else(|_| "basedpyright-langserver".to_string()),
         dart_bin: std::env::var("DART_BIN").unwrap_or_else(|_| "dart".to_string()),
         rust_analyzer_bin: std::env::var("RUST_ANALYZER_BIN").unwrap_or_else(|_| "rust-analyzer".to_string()),
+        csharp_ls_bin: std::env::var("CSHARP_LS_BIN").unwrap_or_else(|_| "csharp-ls".to_string()),
     };
 
     let stdin = std::io::stdin();
