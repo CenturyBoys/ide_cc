@@ -1,7 +1,7 @@
 # code-intel-mcp — uma IDE na mão da LLM
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/OWNER/REPO?sort=semver)](https://github.com/OWNER/REPO/releases)
+[![CI](https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml/badge.svg)](https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/CenturyBoys/ide_cc?sort=semver)](https://github.com/CenturyBoys/ide_cc/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Servidor **MCP** (Model Context Protocol) que dá ao seu agente (Claude Code e afins) operações
@@ -44,14 +44,14 @@ roteamento por linguagem × operação.
 
 **Opção A — baixar o release** (recomendado):
 ```bash
-# Linux x86_64 (troque pelo seu alvo em github.com/OWNER/REPO/releases)
-curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/code-intel-mcp-x86_64-unknown-linux-gnu.tar.gz \
+# Linux x86_64 (troque pelo seu alvo em github.com/CenturyBoys/ide_cc/releases)
+curl -fsSL https://github.com/CenturyBoys/ide_cc/releases/latest/download/code-intel-mcp-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz -C ~/.local/bin
 ```
 
 **Opção B — compilar do fonte** (precisa de Rust):
 ```bash
-git clone https://github.com/OWNER/REPO && cd REPO
+git clone https://github.com/CenturyBoys/ide_cc && cd REPO
 cargo build --release --manifest-path mcp/Cargo.toml
 # binário em mcp/target/release/code-intel-mcp
 ```
