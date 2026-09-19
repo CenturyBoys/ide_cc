@@ -33,6 +33,11 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `call_hierarchy` | tsgo | `prepareCallHierarchy`+`incomingCalls` | quem chama este símbolo |
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
 | `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
+| `validate_build` | build da linguagem | `cargo check`/`dart analyze`/`dotnet build`… | roda o build NO DISCO e reporta erros (2ª camada de segurança) |
+
+Além disso, `rename`/`extract`/`move` aceitam `verify_build: true` (com `apply=true`): após
+escrever no disco, rodam o build da linguagem e **revertem se falhar** — fecha o buraco do
+`net_delta` em memória (ex.: erros que só o `cargo check` do Rust vê).
 
 **Roteamento por linguagem × operação:** o servidor escolhe o backend por extensão e operação,
 mantendo **um processo por (projeto × backend)**, tudo persistente:
@@ -149,6 +154,17 @@ Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSL
 
 > Ao contrário do Rust, o Roslyn analisa **em memória** (vê o `didChange`), então o `net_delta`
 > é confiável para C#.
+
+**Validação de build (Fase 5)** — [`test-validate.jsonl`](test-validate.jsonl), 2ª camada de segurança:
+
+| Cenário | Resultado |
+|---|---|
+| `validate_build(rust-demo)` fixture limpo | **build_ok=true**, sem erros |
+| `rename(Account→make_account, apply=true, verify_build=true)` @ rust-demo | **applied=false** — `net_delta` (memória) passou (0), mas `cargo check` pegou **E0252 (import duplicado)** → **revertido** |
+
+> Fecha o buraco do Rust: a simulação em memória não vê erros de `cargo check` (lê disco); a
+> validação de build pós-apply vê. Comando por linguagem (cargo/dart/dotnet/…), override via env
+> `<LANG>_CHECK_CMD`. TypeScript/Python não têm comando default (configure via env se quiser).
 
 ## Arquitetura (Fases 1–2)
 
