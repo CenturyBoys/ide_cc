@@ -133,6 +133,18 @@ Passos previstos (branch `feature/phase-4-python`):
 Resto da Fase 5 (pendente): RAM residente por server, warmup dirigido (pré-abrir tsconfigs),
 paralelismo, telemetria de tempo por operação.
 
+### Experimento A/B — "com e sem a camada" (2026-09-18)
+
+`feature/ab-experiment`. Prova de valor (Time to Correct Change). Ver [`AB-EXPERIMENT.md`](AB-EXPERIMENT.md).
+- Fixture-armadilha `fixtures/ab-rename`: renomear a classe `Widget`→`Gadget` com armadilhas (const
+  homônima não-relacionada, strings `"Widget"`, comentário, `WidgetFactory`).
+- **A/B mecânico** (`benchmarks/harness/ab-rename.mjs`): texto-cru (`\bWidget\b`→sed) = **INCORRETO**
+  em 2ms (corrompeu strings + const alheia, mas **compilou** → bug silencioso); semântico
+  (`rename_symbol`) = **CORRETO** em 1446ms. → a camada troca "rápido e errado em silêncio" por
+  "correto de primeira".
+- **A/B de agente** (`benchmarks/scripts/ab-agent.sh`): roda `claude -p` com/sem `.mcp.json` +
+  skill `semantic-refactor`; mede o loop completo (requer CLI `claude`).
+
 ## Pendências transversais
 
 - `net_delta` cobre só arquivos afetados pela edição (erro em arquivo externo não é pego).

@@ -68,4 +68,8 @@ echo ">> gerando projeto C# sintético (20 módulos, TFM $CS_TFM)..."
 node "$ROOT/benchmarks/scripts/gen-csproject.mjs" --modules 20 --refs 8 --tfm "$CS_TFM" --out "$FIX/cs-demo"
 echo "   (C# requer .NET SDK + 'dotnet tool install --global csharp-ls'; ajuste CS_TFM ao SDK instalado)"
 
+# --- fixture-armadilha do experimento A/B (rename semântico vs texto) ---
+echo ">> gerando fixture-armadilha A/B..."
+node "$ROOT/benchmarks/scripts/gen-ab-rename.mjs" --out "$FIX/ab-rename"
+
 echo ">> fixtures prontos em $FIX"
