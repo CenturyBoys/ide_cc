@@ -10,6 +10,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 - **Tool `doctor`**: verifica o setup do projeto por linguagem (LSP disponível + config de
   workspace) e, com `fix=true`, corrige o que dá — ex.: cria `pyrightconfig.json` p/ Python
   (detecta `src/` e `.venv`). Fecha o gap descoberto no teste do pachamama.
+- **`install.sh`**: opções `INSTALL_LSP=1` (instala os language servers) e `REGISTER=1` (registra
+  global no Claude Code) — instalação "tudo em um comando".
+
+### Changed
+- README reformulado (banner, prova de valor, catálogo de 10 ferramentas × 5 linguagens).
 
 ## [0.4.1] - 2026-09-19
 
