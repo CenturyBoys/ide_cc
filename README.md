@@ -111,6 +111,7 @@ servers em [`benchmarks/results/RESULTS.md`](benchmarks/results/RESULTS.md).
 
 ## Documentação
 
+- [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md) — **requisitos por linguagem** para resultados corretos (⚠️ Python precisa de config de workspace)
 - [`CHANGELOG.md`](CHANGELOG.md) — histórico de versões (Keep a Changelog + SemVer)
 - [`CLAUDE.md`](CLAUDE.md) — guia do repositório (IA-first)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) · [`docs/RELATORIO-LEVANTAMENTO.md`](docs/RELATORIO-LEVANTAMENTO.md) · [`docs/WORKFLOW.md`](docs/WORKFLOW.md)
