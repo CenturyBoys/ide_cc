@@ -338,7 +338,68 @@ fn creates_from(edit: &Value) -> Vec<String> {
 
 // NÚCLEO da segurança: dado um WorkspaceEdit, simula EM MEMÓRIA, mede net_delta e aplica/reverte.
 // Compartilhado por rename, extract_function e move_symbol. Suporta arquivos novos (CreateFile).
-fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Value, String> {
+// ---- validação de BUILD (Fase 5) ---------------------------------------
+// Fecha o buraco do net_delta em memória: erros que só o build externo pega (ex.: rust-analyzer
+// não vê `cargo check`, que lê o disco). Roda o checker da linguagem NO DISCO após aplicar.
+
+fn build_lang(file: &str) -> &'static str {
+    if file.ends_with(".rs") { "rust" }
+    else if file.ends_with(".dart") { "dart" }
+    else if file.ends_with(".cs") { "csharp" }
+    else if file.ends_with(".py") { "python" }
+    else { "typescript" }
+}
+
+// comando de check por linguagem (override por env <LANG>_CHECK_CMD, ex.: RUST_CHECK_CMD)
+fn build_cmd(lang: &str) -> Option<(String, Vec<String>)> {
+    let (env_key, default): (&str, Option<(&str, Vec<&str>)>) = match lang {
+        "rust" => ("RUST_CHECK_CMD", Some(("cargo", vec!["check", "--quiet", "--message-format=short"]))),
+        "dart" => ("DART_CHECK_CMD", Some(("dart", vec!["analyze"]))),
+        "csharp" => ("CSHARP_CHECK_CMD", Some(("dotnet", vec!["build", "--nologo", "-v", "q"]))),
+        "typescript" => ("TS_CHECK_CMD", None),
+        "python" => ("PY_CHECK_CMD", None),
+        _ => ("", None),
+    };
+    if let Ok(s) = std::env::var(env_key) {
+        let parts: Vec<String> = s.split_whitespace().map(|x| x.to_string()).collect();
+        if !parts.is_empty() {
+            return Some((parts[0].clone(), parts[1..].to_vec()));
+        }
+    }
+    default.map(|(c, a)| (c.to_string(), a.into_iter().map(|x| x.to_string()).collect()))
+}
+
+// roda o checker no diretório do projeto; retorna (ok, amostra de linhas de erro)
+fn build_check(project: &str, lang: &str) -> Result<(bool, Vec<String>), String> {
+    let (cmd, args) = build_cmd(lang)
+        .ok_or_else(|| format!("sem comando de build p/ '{lang}' (defina {}_CHECK_CMD)", lang.to_uppercase()))?;
+    let out = std::process::Command::new(&cmd)
+        .args(&args)
+        .current_dir(project)
+        .output()
+        .map_err(|e| format!("falha ao rodar '{cmd}': {e}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let errors: Vec<String> = combined
+        .lines()
+        .filter(|l| l.to_lowercase().contains("error"))
+        .take(20)
+        .map(|l| l.trim().to_string())
+        .collect();
+    Ok((out.status.success() && errors.is_empty(), errors))
+}
+
+fn verify_and_apply(
+    client: &LspClient,
+    edit: &Value,
+    apply: bool,
+    verify_build: bool,
+    project: &str,
+    lang: &str,
+) -> Result<Value, String> {
     let by_file = edits_by_file(edit);
     let creates = creates_from(edit);
     let mut affected: Vec<String> = by_file.keys().cloned().collect();
@@ -392,8 +453,11 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
     let net_delta = introduced.len() as i64 - resolved.len() as i64;
     let safe = net_delta <= 0;
 
-    let applied;
-    let note;
+    let creates_set: std::collections::HashSet<String> = creates.iter().cloned().collect();
+    let mut applied;
+    let mut note;
+    let mut build_ok = Value::Null;
+    let mut build_errors: Vec<String> = vec![];
     if apply && safe {
         for (f, nt) in &news {
             if let Some(parent) = Path::new(f).parent() {
@@ -403,6 +467,37 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
         }
         applied = true;
         note = "aplicado no disco (net_delta<=0)";
+
+        // Fase 5: validação de BUILD no disco (pega erros que a simulação em memória não vê).
+        if verify_build {
+            match build_check(project, lang) {
+                Ok((ok, errs)) => {
+                    build_ok = json!(ok);
+                    build_errors = errs;
+                    if !ok {
+                        // build quebrou -> REVERTE o disco (restaura existentes, remove criados)
+                        for f in &affected {
+                            if creates_set.contains(f) {
+                                let _ = std::fs::remove_file(f);
+                            } else {
+                                let _ = std::fs::write(f, &originals[f]);
+                            }
+                            if Path::new(f).exists() {
+                                client.did_change(f, &originals[f]);
+                            } else {
+                                client.close(f);
+                            }
+                        }
+                        applied = false;
+                        note = "REVERTIDO: net_delta passou mas o build falhou (ex.: erro que só o cargo check vê)";
+                    }
+                }
+                Err(e) => {
+                    build_ok = json!(null);
+                    build_errors = vec![format!("build-check indisponível: {e}")];
+                }
+            }
+        }
     } else {
         // reverte o estado do server (não escreve disco): existentes voltam; novos fecham
         for f in &affected {
@@ -430,6 +525,8 @@ fn verify_and_apply(client: &LspClient, edit: &Value, apply: bool) -> Result<Val
         "blast_radius": {"files": files_n, "edits": edits_n},
         "creates": creates.iter().map(|c| rel(&root, &path_to_uri(c))).collect::<Vec<_>>(),
         "changes": per_file,
+        "build_ok": build_ok,
+        "build_errors": build_errors,
         "note": note,
     }))
 }
@@ -537,7 +634,7 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
             }))
         }
     };
-    let mut result = verify_and_apply(&client, &edit, apply)?;
+    let mut result = verify_and_apply(&client, &edit, apply, a["verify_build"].as_bool().unwrap_or(false), project, build_lang(file))?;
     result["operation"] = json!("rename_symbol");
     result["symbol"] = json!(symbol);
     result["new_name"] = json!(new_name);
@@ -602,7 +699,7 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let uri = path_to_uri(&abs);
     // prefere extração para o escopo do módulo (função nomeada no topo)
     let edit = refactor_edit(&client, &uri, &range, "refactor.extract.function", Some("module scope"))?;
-    let mut result = verify_and_apply(&client, &edit, apply)?;
+    let mut result = verify_and_apply(&client, &edit, apply, a["verify_build"].as_bool().unwrap_or(false), project, build_lang(file))?;
     result["operation"] = json!("extract_function");
     Ok(result)
 }
@@ -620,7 +717,7 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let range = json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c}});
     let uri = path_to_uri(&abs);
     let edit = refactor_edit(&client, &uri, &range, "refactor.move", Some("new file"))?;
-    let mut result = verify_and_apply(&client, &edit, apply)?;
+    let mut result = verify_and_apply(&client, &edit, apply, a["verify_build"].as_bool().unwrap_or(false), project, build_lang(file))?;
     result["operation"] = json!("move_symbol");
     result["symbol"] = json!(symbol);
     Ok(result)
@@ -721,6 +818,19 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(json!({"symbol": symbol, "incoming_count": callers.len(), "incoming": callers}))
 }
 
+// Fase 5: roda o build/check da linguagem NO DISCO e reporta erros (pega o que a simulação
+// em memória não vê — ex.: erros de `cargo check` no Rust). Standalone: chame após um apply.
+fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let lang = a["lang"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| a["file"].as_str().map(|f| build_lang(f).to_string()))
+        .ok_or("faltou 'lang' ou 'file'")?;
+    let (ok, errors) = build_check(project, &lang)?;
+    Ok(json!({"lang": lang, "build_ok": ok, "errors": errors}))
+}
+
 fn tools_schema() -> Value {
     json!([
         {
@@ -748,6 +858,7 @@ fn tools_schema() -> Value {
                     "symbol": {"type": "string", "description": "nome ou name_path (ex.: 'ZodType' ou 'Widget/render')"},
                     "new_name": {"type": "string"},
                     "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build da linguagem após aplicar e REVERTE se falhar (pega erros que o net_delta em memória não vê, ex.: cargo check)"},
                     "line": {"type": "integer", "description": "opcional: linha 1-indexed"}
                 },
                 "required": ["project", "file", "symbol", "new_name"]
@@ -810,7 +921,8 @@ fn tools_schema() -> Value {
                     "end_line": {"type": "integer", "description": "1-indexed"},
                     "start_col": {"type": "integer", "description": "opcional, 0-indexed"},
                     "end_col": {"type": "integer", "description": "opcional, 0-indexed (default: fim da linha)"},
-                    "apply": {"type": "boolean"}
+                    "apply": {"type": "boolean"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
                 },
                 "required": ["project", "file", "start_line", "end_line"]
             }
@@ -824,9 +936,23 @@ fn tools_schema() -> Value {
                     "project": {"type": "string"}, "file": {"type": "string"},
                     "symbol": {"type": "string"},
                     "line": {"type": "integer", "description": "opcional: linha 1-indexed"},
-                    "apply": {"type": "boolean"}
+                    "apply": {"type": "boolean"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
                 },
                 "required": ["project", "file", "symbol"]
+            }
+        },
+        {
+            "name": "validate_build",
+            "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Comando por linguagem, override via env <LANG>_CHECK_CMD.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "file": {"type": "string", "description": "para inferir a linguagem"},
+                    "lang": {"type": "string", "description": "rust|dart|csharp|typescript|python (alternativa a 'file')"}
+                },
+                "required": ["project"]
             }
         }
     ])
@@ -842,6 +968,7 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         "call_hierarchy" => tool_call_hierarchy(srv, args),
         "extract_function" => tool_extract_function(srv, args),
         "move_symbol" => tool_move_symbol(srv, args),
+        "validate_build" => tool_validate_build(srv, args),
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
     match res {

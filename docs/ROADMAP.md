@@ -32,7 +32,7 @@ mudança correta**.
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
 | **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
-| **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM, **validação build/test** | ⬜ **próxima** |
+| **5. Otimização** | **validação build/test ✅** · cache persistente, warmup dirigido, paralelismo, telemetria, RAM | 🟡 **em curso** (validação feita) |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
 
@@ -107,6 +107,20 @@ Passos previstos (branch `feature/phase-4-python`):
 5. Validar: find_references, rename (apply→verify), document_symbols, call_hierarchy.
 6. Benchmark de latência do basedpyright no harness; registrar em RESULTS.md.
 7. Documentar quirks (basedpyright é push; completude de references exige workspace-mode).
+
+### Fase 5 — Validação de build: CONCLUÍDO (2026-09-18)
+
+`feature/phase-5-validation`. Defesa em **duas camadas**:
+1. `net_delta` em memória (rápido; erros nativos do server).
+2. `verify_build`/`validate_build`: roda o build da linguagem NO DISCO (cargo check / dart analyze /
+   dotnet build / …), pega erros que a simulação em memória não vê e **reverte** se falhar.
+- Nova tool `validate_build`; opção `verify_build:true` em rename/extract/move (9 tools no total).
+- Provado no Rust: rename `Account→make_account` — net_delta memória=0 (passou), mas `cargo check`
+  pegou **E0252 (import duplicado)** → **revertido**, disco intacto. Comando por linguagem,
+  override via env `<LANG>_CHECK_CMD`. Teste: `mcp/test-validate.jsonl`.
+
+Resto da Fase 5 (pendente): RAM residente por server, cache persistente entre sessões, warmup
+dirigido (pré-abrir tsconfigs/projetos), paralelismo, telemetria de tempo por operação.
 
 ## Pendências transversais
 
