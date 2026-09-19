@@ -977,8 +977,8 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
     }
 }
 
-fn main() {
-    let srv = Server {
+fn build_server() -> Server {
+    Server {
         clients: Mutex::new(HashMap::new()),
         tsgo_bin: std::env::var("TSGO_BIN").unwrap_or_else(|_| "tsgo".to_string()),
         vtsls_bin: std::env::var("VTSLS_BIN").unwrap_or_else(|_| "vtsls".to_string()),
@@ -986,7 +986,123 @@ fn main() {
         dart_bin: std::env::var("DART_BIN").unwrap_or_else(|_| "dart".to_string()),
         rust_analyzer_bin: std::env::var("RUST_ANALYZER_BIN").unwrap_or_else(|_| "rust-analyzer".to_string()),
         csharp_ls_bin: std::env::var("CSHARP_LS_BIN").unwrap_or_else(|_| "csharp-ls".to_string()),
+    }
+}
+
+// ---- CACHE ENTRE SESSÕES (Fase 5, opt-in via CODE_INTEL_DAEMON=1) -------
+// Problema: o Claude Code recria o processo MCP a cada sessão, matando os LSPs quentes -> paga o
+// cold-start (rust-analyzer ~30s, csharp-ls ~24s) de novo. Solução: um DAEMON separado, dono dos
+// LSPs, que sobrevive ao restart do MCP. O MCP vira um proxy fino sobre um Unix socket.
+// (Seguro porque o freshness re-sincroniza arquivos mudados no disco entre sessões.)
+
+fn sock_path() -> String {
+    std::env::var("CODE_INTEL_SOCK").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "tmp".into());
+        format!("/tmp/code-intel-mcp{}.sock", home.replace('/', "_"))
+    })
+}
+
+fn run_daemon() {
+    let srv = Arc::new(build_server());
+    let path = sock_path();
+    let _ = std::fs::remove_file(&path);
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind unix socket");
+    // watchdog: encerra após 30min ocioso (sem conexões)
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let last = Arc::new(Mutex::new(Instant::now()));
+    {
+        let (active, last) = (active.clone(), last.clone());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            if active.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && last.lock().unwrap().elapsed() > Duration::from_secs(1800)
+            {
+                std::process::exit(0);
+            }
+        });
+    }
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        let (srv, active, last) = (srv.clone(), active.clone(), last.clone());
+        std::thread::spawn(move || {
+            active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            handle_daemon_conn(stream, &srv);
+            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            *last.lock().unwrap() = Instant::now();
+        });
+    }
+}
+
+fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
+    let reader = std::io::BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+    let mut w = stream;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let id = msg.get("id").cloned();
+        let name = msg["params"]["name"].as_str().unwrap_or("").to_string();
+        let args = msg["params"]["arguments"].clone();
+        let result = call_tool(srv, &name, &args);
+        let resp = json!({"jsonrpc":"2.0","id":id,"result":result});
+        if writeln!(w, "{}", serde_json::to_string(&resp).unwrap()).is_err() {
+            break;
+        }
+        let _ = w.flush();
+    }
+}
+
+// no MCP: encaminha um tools/call ao daemon (sobe o daemon se necessário)
+fn forward_call(name: &str, args: &Value) -> Value {
+    let path = sock_path();
+    if std::os::unix::net::UnixStream::connect(&path).is_err() {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe)
+                .arg("--daemon")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        let start = Instant::now();
+        while std::os::unix::net::UnixStream::connect(&path).is_err()
+            && start.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let err = |m: &str| json!({"content":[{"type":"text","text": format!("ERRO: {m}")}], "isError": true});
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&path) else {
+        return err("daemon indisponível");
     };
+    let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
+    if writeln!(stream, "{}", serde_json::to_string(&req).unwrap()).is_err() {
+        return err("falha ao enviar ao daemon");
+    }
+    let _ = stream.flush();
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_ok() {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            return v.get("result").cloned().unwrap_or_else(|| err("resposta vazia do daemon"));
+        }
+    }
+    err("falha ao ler do daemon")
+}
+
+fn main() {
+    if std::env::args().any(|a| a == "--daemon") {
+        run_daemon();
+        return;
+    }
+    // opt-in: encaminha as operações ao daemon (índice quente sobrevive entre sessões)
+    let use_daemon = std::env::var("CODE_INTEL_DAEMON").is_ok();
+    let srv = build_server();
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -1023,7 +1139,7 @@ fn main() {
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or("");
                 let args = msg["params"]["arguments"].clone();
-                Some(call_tool(&srv, name, &args))
+                Some(if use_daemon { forward_call(name, &args) } else { call_tool(&srv, name, &args) })
             }
             "ping" => Some(json!({})),
             _ => None,

@@ -49,6 +49,9 @@ cd mcp && TSGO_BIN=../benchmarks/harness/node_modules/.bin/tsgo \
   (2) `verify_build`/`validate_build` roda o build da linguagem no disco e reverte se falhar — pega
   erros que a simulação em memória não vê (ex.: `cargo check` do Rust).
 - **Diagnostics híbrido**: PULL (tsgo) ou PUSH (vtsls/pyright), detectado por capability.
+- **Frescor**: `ensure_open` re-sincroniza (didChange) quando o mtime do disco muda → edições
+  feitas fora do Claude são refletidas. **Cache entre sessões** (opt-in `CODE_INTEL_DAEMON=1`):
+  daemon dono dos LSPs sobrevive ao restart do MCP (proxy Unix socket) — 2ª sessão ~23× + rápida.
 - Camada em **Rust**; navegação pura o LSP nativo do Claude Code já faz — nosso valor é a
   **edição mecânica segura**.
 

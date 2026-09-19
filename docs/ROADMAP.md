@@ -32,7 +32,7 @@ mudança correta**.
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
 | **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
-| **5. Otimização** | **validação build/test ✅** · cache persistente, warmup dirigido, paralelismo, telemetria, RAM | 🟡 **em curso** (validação feita) |
+| **5. Otimização** | **validação ✅ · frescor ✅ · cache entre sessões ✅** · warmup dirigido, paralelismo, telemetria, RAM | 🟡 **em curso** |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
 
@@ -119,8 +119,19 @@ Passos previstos (branch `feature/phase-4-python`):
   pegou **E0252 (import duplicado)** → **revertido**, disco intacto. Comando por linguagem,
   override via env `<LANG>_CHECK_CMD`. Teste: `mcp/test-validate.jsonl`.
 
-Resto da Fase 5 (pendente): RAM residente por server, cache persistente entre sessões, warmup
-dirigido (pré-abrir tsconfigs/projetos), paralelismo, telemetria de tempo por operação.
+### Fase 5 — Frescor + Cache entre sessões: CONCLUÍDO (2026-09-18)
+
+`feature/phase-5-cache`.
+- **Frescor:** `ensure_open` detecta mudança de mtime no disco e re-sincroniza via `didChange` —
+  edições feitas FORA do Claude são refletidas (pré-requisito de correção p/ qualquer cache).
+  Teste `benchmarks/harness/freshness-test.mjs`.
+- **Cache entre sessões (daemon, opt-in `CODE_INTEL_DAEMON=1`):** daemon separado dono dos LSPs
+  sobrevive ao restart do MCP (proxy via Unix socket; idle-exit 30min). Medido: 2ª sessão MCP no
+  mesmo projeto Rust = **1,2 s vs 27,9 s da 1ª (23× mais rápido)**, mesmo resultado (524).
+  Teste `benchmarks/harness/daemon-cache-test.mjs`. Vale para servers pesados (Rust/C#) + multi-sessão.
+
+Resto da Fase 5 (pendente): RAM residente por server, warmup dirigido (pré-abrir tsconfigs),
+paralelismo, telemetria de tempo por operação.
 
 ## Pendências transversais
 

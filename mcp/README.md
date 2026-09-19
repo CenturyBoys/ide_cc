@@ -185,6 +185,32 @@ O `net_delta` usa **pull diagnostics** (não push): como o tsgo é pull-based e 
 mensagens em ordem, um `textDocument/diagnostic` após o `didChange` reflete deterministicamente
 o estado pós-edição — sem heurística de "esperar estabilizar".
 
+## Frescor e cache entre sessões (Fase 5)
+
+**Frescor (freshness) — sempre ligado.** Um server persistente serviria conteúdo obsoleto se um
+arquivo fosse editado **fora do Claude** (outro editor, `git checkout`). O `ensure_open` detecta
+mudança de **mtime** no disco e **re-sincroniza** (`didChange`) antes de operar. Verificado em
+[`../benchmarks/harness/freshness-test.mjs`](../benchmarks/harness/freshness-test.mjs): edição
+externa (função `two` adicionada no disco) aparece na consulta seguinte.
+
+**Cache entre sessões (daemon) — opt-in via `CODE_INTEL_DAEMON=1`.** O Claude Code recria o
+processo MCP a cada sessão, matando os LSPs quentes → paga o cold-start de novo (rust-analyzer
+~30s, csharp-ls ~24s). Com o daemon, um processo separado é dono dos LSPs e **sobrevive ao
+restart** do MCP (que vira um proxy fino sobre um Unix socket). O frescor garante que arquivos
+mudados entre sessões são re-sincronizados, então é seguro.
+
+Medido ([`../benchmarks/harness/daemon-cache-test.mjs`](../benchmarks/harness/daemon-cache-test.mjs)),
+2 sessões MCP separadas no mesmo projeto Rust:
+
+| Sessão | | Tempo |
+|---|---|---|
+| 1 (cold, sobe daemon + rust-analyzer) | 524 refs | **27,9 s** |
+| 2 (MCP novo, reconecta ao daemon quente) | 524 refs | **1,2 s** (**23× mais rápido**) |
+
+Vale a pena só para servers de cold-start pesado (Rust, C#) **e** fluxo multi-sessão. Numa sessão
+longa única, a persistência in-process (default) já resolve. O daemon encerra após 30 min ocioso.
+Rode o daemon manualmente com `code-intel-mcp --daemon` (ou deixe o MCP subir sob demanda).
+
 ## Limitações conhecidas (POC) / próximos passos
 
 - `net_delta` mede diagnostics apenas dos **arquivos afetados** pela edição; um erro introduzido
