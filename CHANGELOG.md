@@ -6,6 +6,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-19
+
 ### Fixed
 - Workflow de release: alvo `x86_64-apple-darwin` migrado de `macos-13` (runner escasso — travava a
   fila por horas) para `macos-latest` com cross-compile. Os 4 binários passam a sair de forma confiável.
@@ -68,7 +70,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.1.0...v0.2.0
