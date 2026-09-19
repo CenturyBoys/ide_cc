@@ -2,7 +2,7 @@
 // Padrão (endossado pela pesquisa / Serena): processo long-lived + thread leitora dedicada
 // roteando respostas por id; requests síncronos bloqueantes. Sem runtime async.
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -14,7 +14,7 @@ pub struct LspClient {
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<i64, Sender<Value>>>>,
     id: AtomicI64,
-    opened: Mutex<HashSet<String>>,
+    opened: Mutex<HashMap<String, u128>>, // path -> mtime (ms) já sincronizado
     versions: Mutex<HashMap<String, i64>>,
     // diagnostics via PUSH (publishDiagnostics) — usado quando o server não suporta PULL
     diagnostics: Arc<Mutex<HashMap<String, Value>>>,
@@ -117,7 +117,7 @@ impl LspClient {
             stdin,
             pending,
             id: AtomicI64::new(1),
-            opened: Mutex::new(HashSet::new()),
+            opened: Mutex::new(HashMap::new()),
             versions: Mutex::new(HashMap::new()),
             diagnostics,
             diag_gen,
@@ -189,20 +189,30 @@ impl LspClient {
     }
 
     /// Garante didOpen do arquivo (idempotente). Necessário antes de operações semânticas.
+    /// Garante que o server tem o conteúdo ATUAL do disco. Se o arquivo já foi aberto mas mudou
+    /// no disco (edição externa ao Claude), re-sincroniza via didChange. Isto é o "freshness":
+    /// sem ele, um server persistente serviria conteúdo obsoleto.
     pub fn ensure_open(&self, abs_file: &str) -> Result<(), String> {
-        {
-            if self.opened.lock().unwrap().contains(abs_file) {
-                return Ok(());
+        let cur = disk_mtime(abs_file);
+        let tracked = self.opened.lock().unwrap().get(abs_file).copied();
+        match tracked {
+            Some(t) if cur == Some(t) => return Ok(()), // aberto e sem mudança no disco
+            Some(_) => {
+                // aberto, mas o disco mudou -> re-sincroniza o conteúdo
+                let text = std::fs::read_to_string(abs_file).map_err(|e| format!("ler {abs_file}: {e}"))?;
+                self.did_change(abs_file, &text);
+            }
+            None => {
+                let text = std::fs::read_to_string(abs_file).map_err(|e| format!("ler {abs_file}: {e}"))?;
+                let lang = lang_id(abs_file);
+                self.notify(
+                    "textDocument/didOpen",
+                    json!({"textDocument":{"uri":path_to_uri(abs_file),"languageId":lang,"version":1,"text":text}}),
+                );
+                self.versions.lock().unwrap().insert(abs_file.to_string(), 1);
             }
         }
-        let text = std::fs::read_to_string(abs_file).map_err(|e| format!("ler {abs_file}: {e}"))?;
-        let lang = lang_id(abs_file);
-        self.notify(
-            "textDocument/didOpen",
-            json!({"textDocument":{"uri":path_to_uri(abs_file),"languageId":lang,"version":1,"text":text}}),
-        );
-        self.opened.lock().unwrap().insert(abs_file.to_string());
-        self.versions.lock().unwrap().insert(abs_file.to_string(), 1);
+        self.opened.lock().unwrap().insert(abs_file.to_string(), cur.unwrap_or(0));
         Ok(())
     }
 
@@ -230,7 +240,7 @@ impl LspClient {
             "textDocument/didOpen",
             json!({"textDocument":{"uri":path_to_uri(abs_file),"languageId":lang,"version":1,"text":text}}),
         );
-        self.opened.lock().unwrap().insert(abs_file.to_string());
+        self.opened.lock().unwrap().insert(abs_file.to_string(), disk_mtime(abs_file).unwrap_or(0));
         self.versions.lock().unwrap().insert(abs_file.to_string(), 1);
     }
 
@@ -262,6 +272,15 @@ impl LspClient {
     pub fn root(&self) -> &str {
         &self.root
     }
+}
+
+// mtime do arquivo em ms desde epoch (para detectar edições externas ao Claude)
+pub fn disk_mtime(abs: &str) -> Option<u128> {
+    std::fs::metadata(abs)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
 }
 
 pub fn lang_id(abs_file: &str) -> &'static str {
