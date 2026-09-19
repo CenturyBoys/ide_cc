@@ -82,3 +82,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 - **Decisões arquiteturais** entram no `CLAUDE.md` (resumo) e no relatório/ROADMAP (detalhe), pra
   o próximo agente não re-derivar.
 - **Trabalho por fase**: uma fase do ROADMAP ≈ uma `feature/phase-N-*` ≈ um PR.
+- **CHANGELOG (premissa):** todo PR com mudança notável adiciona uma linha em `CHANGELOG.md` na
+  seção `[Unreleased]` (Keep a Changelog: Added/Changed/Fixed/Removed). No **release**
+  (`develop → main` + tag `vX.Y.Z`), mover `[Unreleased]` para a nova versão com a data e atualizar
+  os links de comparação no rodapé.
