@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "code-intel": {
+      "command": "/home/ximit/Projects/ide_cc/mcp/target/release/code-intel-mcp",
+      "env": {
+        "TSGO_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/tsgo",
+        "VTSLS_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/vtsls"
+      }
+    }
+  }
+}
