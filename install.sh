@@ -3,6 +3,8 @@
 # verifica quais language servers você já tem. Uso:
 #   curl -fsSL https://raw.githubusercontent.com/CenturyBoys/ide_cc/main/install.sh | bash
 # Opções (env): BIN_DIR=~/.local/bin  VERSION=latest  WRITE_MCP=1 (escreve .mcp.json no cwd)
+#               INSTALL_LSP=1 (instala os language servers faltantes)  REGISTER=1 (registra global no Claude Code)
+#   Instalação "tudo em um": curl ... | INSTALL_LSP=1 REGISTER=1 bash
 set -euo pipefail
 
 REPO="CenturyBoys/ide_cc"
@@ -41,6 +43,23 @@ check basedpyright-langserver "pip install basedpyright   (ou: npm i -g basedpyr
 check dart                    "instale o Dart/Flutter SDK"
 check rust-analyzer           "rustup component add rust-analyzer"
 check csharp-ls               "dotnet tool install --global csharp-ls"
+
+# 3b. opcional: instala os language servers faltantes (best-effort, pelo gerenciador disponível)
+if [ "${INSTALL_LSP:-0}" = "1" ]; then
+  echo; echo ">> instalando language servers (INSTALL_LSP=1)..."
+  command -v npm    >/dev/null 2>&1 && npm i -g @typescript/native-preview @vtsls/language-server >/dev/null 2>&1 && echo "  [ok] tsgo + vtsls (npm)"
+  command -v pip    >/dev/null 2>&1 && pip install -q basedpyright >/dev/null 2>&1 && echo "  [ok] basedpyright (pip)"
+  command -v rustup >/dev/null 2>&1 && rustup component add rust-analyzer >/dev/null 2>&1 && echo "  [ok] rust-analyzer (rustup)"
+  command -v dotnet >/dev/null 2>&1 && dotnet tool install --global csharp-ls >/dev/null 2>&1 && echo "  [ok] csharp-ls (dotnet)"
+  echo "  (Dart: instale o SDK manualmente se precisar)"
+fi
+
+# 3c. opcional: registra o MCP GLOBAL no Claude Code (vale em todos os projetos)
+if [ "${REGISTER:-0}" = "1" ] && command -v claude >/dev/null 2>&1; then
+  claude mcp remove code-intel --scope user >/dev/null 2>&1 || true
+  claude mcp add code-intel --scope user -- "$BIN_DIR/code-intel-mcp" >/dev/null 2>&1 \
+    && echo && echo ">> registrado GLOBAL no Claude Code (escopo user) — funciona em qualquer projeto"
+fi
 
 # 4. opcional: escreve um .mcp.json no diretório atual
 if [ "${WRITE_MCP:-0}" = "1" ]; then

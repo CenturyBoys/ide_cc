@@ -6,6 +6,18 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-19
+
+### Added
+- **Tool `doctor`**: verifica o setup do projeto por linguagem (LSP disponível + config de
+  workspace) e, com `fix=true`, corrige o que dá — ex.: cria `pyrightconfig.json` p/ Python
+  (detecta `src/` e `.venv`). Fecha o gap descoberto no teste do pachamama.
+- **`install.sh`**: opções `INSTALL_LSP=1` (instala os language servers) e `REGISTER=1` (registra
+  global no Claude Code) — instalação "tudo em um comando".
+
+### Changed
+- README reformulado (banner, prova de valor, catálogo de 10 ferramentas × 5 linguagens).
+
 ## [0.4.1] - 2026-09-19
 
 ### Fixed
@@ -70,7 +82,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.2.0...v0.3.0
