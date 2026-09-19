@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"extract_function","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/refactor-ts","file":"src/main.ts","start_line":2,"end_line":4}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"move_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/refactor-ts","file":"src/main.ts","symbol":"K"}}}
