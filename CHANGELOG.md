@@ -6,6 +6,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **`install.sh`**: instalador que detecta a plataforma, baixa o binário do release e verifica os
+  language servers (`curl … | bash`; opções `BIN_DIR`, `VERSION`, `WRITE_MCP`).
+- Flag `--version` no binário.
+
+### Fixed
+- `serverInfo.version` agora reflete a versão do crate (`env!("CARGO_PKG_VERSION")`) em vez de um
+  literal fixo.
+
 ## [0.3.0] - 2026-09-19
 
 ### Added

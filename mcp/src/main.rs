@@ -1243,7 +1243,12 @@ fn forward_call(name: &str, args: &Value) -> Value {
 }
 
 fn main() {
-    if std::env::args().any(|a| a == "--daemon") {
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        println!("code-intel-mcp {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if argv.iter().any(|a| a == "--daemon") {
         run_daemon();
         return;
     }
@@ -1282,7 +1287,7 @@ fn main() {
                 Some(json!({
                     "protocolVersion": pv,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "code-intel-mcp", "version": "0.1.0"}
+                    "serverInfo": {"name": "code-intel-mcp", "version": env!("CARGO_PKG_VERSION")}
                 }))
             }
             "tools/list" => Some(json!({"tools": tools_schema()})),
