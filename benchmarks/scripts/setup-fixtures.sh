@@ -49,4 +49,13 @@ EOF
 echo ">> gerando projeto Python sintético (20 módulos)..."
 node "$ROOT/benchmarks/scripts/gen-pyproject.mjs" --modules 20 --refs 8 --out "$FIX/py-demo"
 
+# --- pacote Dart sintético (Fase 4: Dart Analysis Server) ---------------
+echo ">> gerando pacote Dart sintético (20 módulos)..."
+node "$ROOT/benchmarks/scripts/gen-dartproject.mjs" --modules 20 --refs 8 --out "$FIX/dart-demo"
+if command -v dart >/dev/null 2>&1; then
+  (cd "$FIX/dart-demo" && dart pub get >/dev/null 2>&1) && echo "   dart pub get ok"
+else
+  echo "   (dart ausente; rode 'dart pub get' em $FIX/dart-demo antes de usar)"
+fi
+
 echo ">> fixtures prontos em $FIX"

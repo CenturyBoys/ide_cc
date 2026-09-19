@@ -40,11 +40,13 @@ const SERVERS = {
   vtsls: { cmd: join(__dirname, 'node_modules/.bin/vtsls'), args: ['--stdio'] },
   tsgo: { cmd: join(__dirname, 'node_modules/.bin/tsgo'), args: ['--lsp', '-stdio'] },
   basedpyright: { cmd: join(__dirname, 'node_modules/.bin/basedpyright-langserver'), args: ['--stdio'] },
+  dart: { cmd: 'dart', args: ['language-server'] },
 };
 
 // languageId do LSP a partir da extensão (o harness é multi-linguagem agora)
 function langId(file) {
   if (file.endsWith('.py')) return 'python';
+  if (file.endsWith('.dart')) return 'dart';
   if (file.endsWith('.tsx')) return 'typescriptreact';
   if (file.endsWith('.jsx')) return 'javascriptreact';
   if (file.endsWith('.js') || file.endsWith('.mjs')) return 'javascript';

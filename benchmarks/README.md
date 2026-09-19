@@ -91,5 +91,8 @@ correto mas lento.
 confirmando que o cold-index race é **cross-language**. Rodar:
 `node lsp-bench.mjs --server basedpyright --fixture ../../fixtures/py-demo --file models.py --search "class Account" --symbol Account --newname Ledger`
 
-Próximos: memória residente por server; monorepo maior (100+ pacotes); Dart/Rust/C#; comparar
+**Dart (Fase 4):** `dart language-server` medido em `dart-demo` (Run 008) — **não trunca** (eager,
+como o tsgo), cold-start 291 ms em pacote puro. Rode `dart pub get` no fixture antes.
+
+Próximos: memória residente por server; monorepo maior (100+ pacotes); Rust/C#; comparar
 `ty` (Rust) vs basedpyright; divergência tsgo(64) vs vtsls(55) no zod.
