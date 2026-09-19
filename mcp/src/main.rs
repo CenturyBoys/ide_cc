@@ -11,16 +11,22 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// Backends por operação (achado da Fase "move/extract"): tsgo é rápido e correto para
-// navegação/rename, mas NÃO implementa refactorings (extract/move). vtsls (tsserver) tem o
-// set completo. Roteamos por operação.
-const NAV: &str = "tsgo";
-const REFACTOR: &str = "vtsls";
+// Roteamento por LINGUAGEM × OPERAÇÃO:
+// - TypeScript: tsgo (nav/rename, rápido e correto) + vtsls (refactorings — tsgo não os tem).
+// - Python: basedpyright para tudo.
+// A camada é agnóstica: adicionar linguagem = adicionar um backend + um match aqui.
+fn nav_backend(file: &str) -> &'static str {
+    if file.ends_with(".py") { "basedpyright" } else { "tsgo" }
+}
+fn refactor_backend(file: &str) -> &'static str {
+    if file.ends_with(".py") { "basedpyright" } else { "vtsls" }
+}
 
 struct Server {
     clients: Mutex<HashMap<String, Arc<LspClient>>>, // chave: "project\0backend"
     tsgo_bin: String,
     vtsls_bin: String,
+    basedpyright_bin: String,
 }
 
 impl Server {
@@ -32,6 +38,7 @@ impl Server {
         }
         let (cmd, args): (&str, Vec<&str>) = match backend {
             "vtsls" => (&self.vtsls_bin, vec!["--stdio"]),
+            "basedpyright" => (&self.basedpyright_bin, vec!["--stdio"]),
             _ => (&self.tsgo_bin, vec!["--lsp", "-stdio"]),
         };
         let c = LspClient::start(cmd, &args, project)?;
@@ -406,7 +413,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let file = a["file"].as_str().ok_or("faltou 'file' (relativo ao project)")?;
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
-    let client = srv.client(project, NAV)?;
+    let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -473,7 +480,7 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let new_name = a["new_name"].as_str().ok_or("faltou 'new_name'")?;
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
-    let client = srv.client(project, NAV)?;
+    let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -547,7 +554,7 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let start_line = a["start_line"].as_u64().ok_or("faltou 'start_line' (1-indexed)")?;
     let end_line = a["end_line"].as_u64().ok_or("faltou 'end_line' (1-indexed)")?;
     let apply = a["apply"].as_bool().unwrap_or(false);
-    let client = srv.client(project, REFACTOR)?; // vtsls tem os refactorings
+    let client = srv.client(project, refactor_backend(file))?; // vtsls tem os refactorings
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("ler {abs}: {e}"))?;
@@ -569,7 +576,7 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false);
-    let client = srv.client(project, REFACTOR)?;
+    let client = srv.client(project, refactor_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -585,7 +592,7 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
 fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
-    let client = srv.client(project, NAV)?;
+    let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
@@ -601,7 +608,7 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
     let name_path = a["name_path"].as_str().ok_or("faltou 'name_path' (ex.: 'Widget' ou 'Widget/render')")?;
-    let client = srv.client(project, NAV)?;
+    let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
@@ -619,7 +626,9 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
 fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let query = a["query"].as_str().ok_or("faltou 'query'")?;
-    let client = srv.client(project, NAV)?;
+    // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts)
+    let backend = if a["lang"].as_str() == Some("python") { "basedpyright" } else { "tsgo" };
+    let client = srv.client(project, backend)?;
     let res = client.request("workspace/symbol", json!({"query": query}), 10_000)?;
     let root = client.root().to_string();
     let list: Vec<Value> = res
@@ -643,7 +652,7 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
-    let client = srv.client(project, NAV)?;
+    let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -730,10 +739,13 @@ fn tools_schema() -> Value {
         },
         {
             "name": "workspace_symbols",
-            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol).",
+            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Use lang='python' para projetos Python.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"project": {"type": "string"}, "query": {"type": "string"}},
+                "properties": {
+                    "project": {"type": "string"}, "query": {"type": "string"},
+                    "lang": {"type": "string", "description": "'python' ou 'typescript' (default)"}
+                },
                 "required": ["project", "query"]
             }
         },
@@ -806,6 +818,7 @@ fn main() {
         clients: Mutex::new(HashMap::new()),
         tsgo_bin: std::env::var("TSGO_BIN").unwrap_or_else(|_| "tsgo".to_string()),
         vtsls_bin: std::env::var("VTSLS_BIN").unwrap_or_else(|_| "vtsls".to_string()),
+        basedpyright_bin: std::env::var("BASEDPYRIGHT_BIN").unwrap_or_else(|_| "basedpyright-langserver".to_string()),
     };
 
     let stdin = std::io::stdin();

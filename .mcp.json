@@ -4,7 +4,8 @@
       "command": "/home/ximit/Projects/ide_cc/mcp/target/release/code-intel-mcp",
       "env": {
         "TSGO_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/tsgo",
-        "VTSLS_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/vtsls"
+        "VTSLS_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/vtsls",
+        "BASEDPYRIGHT_BIN": "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/basedpyright-langserver"
       }
     }
   }
