@@ -34,6 +34,7 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
 | `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
 | `validate_build` | build da linguagem | `cargo check`/`dart analyze`/`dotnet build`… | roda o build NO DISCO e reporta erros (2ª camada de segurança) |
+| `doctor` | — | checagem de setup | verifica LSP disponível + config de workspace por linguagem; `fix=true` corrige (ex.: cria `pyrightconfig.json`) |
 
 Além disso, `rename`/`extract`/`move` aceitam `verify_build: true` (com `apply=true`): após
 escrever no disco, rodam o build da linguagem e **revertem se falhar** — fecha o buraco do
