@@ -60,7 +60,8 @@ cd mcp && TSGO_BIN=../benchmarks/harness/node_modules/.bin/tsgo \
 1. **Reprodutibilidade acima de tudo.** Todo resultado (benchmark, teste) tem script + versões
    fixadas + markdown documentando como reproduzir. Nada de número sem origem.
 2. **Documentar junto com o código.** Toda mudança atualiza o README/RESULTS/ROADMAP relevante
-   na mesma unidade de trabalho.
+   na mesma unidade de trabalho — e registra uma linha em `CHANGELOG.md` (seção `[Unreleased]`,
+   formato Keep a Changelog + SemVer). Ao cortar um release, mover `[Unreleased]` para a versão.
 3. **Testes como artefato versionado** (`mcp/test-*.jsonl`).
 4. **Git**: gitflow + Conventional Commits + PR — ver [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 5. **Plano vivo**: o estado das fases fica em [`docs/ROADMAP.md`](docs/ROADMAP.md); atualize ao
