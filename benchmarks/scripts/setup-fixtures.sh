@@ -45,4 +45,8 @@ export function useCompute(): number {
 }
 EOF
 
+# --- projeto Python sintético (Fase 4: basedpyright) --------------------
+echo ">> gerando projeto Python sintético (20 módulos)..."
+node "$ROOT/benchmarks/scripts/gen-pyproject.mjs" --modules 20 --refs 8 --out "$FIX/py-demo"
+
 echo ">> fixtures prontos em $FIX"

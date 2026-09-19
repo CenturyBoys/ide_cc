@@ -31,8 +31,20 @@ mudança correta**.
 | **2. Edição segura** | apply→verify com net_delta | ✅ **concluída** |
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
-| **4. Multi-linguagem** | adapters: **Python** (basedpyright) → depois Dart, Rust, C# | ⏭️ **próxima** |
+| **4. Multi-linguagem** | **Python (basedpyright) ✅** → depois Dart, Rust, C# | 🟡 **em curso** (Python feito) |
 | **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM | ⬜ pendente |
+
+### Fase 4 — Python: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-python`. basedpyright plugado; roteamento por **linguagem × operação**
+(`nav_backend`/`refactor_backend` por extensão). Provado em `fixtures/py-demo` (20 módulos):
+- find_references: **523 refs, stable** (gate entregou o total; sozinho o server truncava 3→523, Run 007).
+- document_symbols, call_hierarchy (20 callers), rename preview (net_delta 0) — OK.
+- rename colisão apply=true → **net_delta 342, bloqueado** (net_delta via **PUSH** diagnostics — basedpyright é push).
+- Confirma: camada **agnóstica**, gate **cross-language**, diagnostics **híbrido** funcionam. Teste: `mcp/test-python.jsonl`.
+- Decisão D2b: **basedpyright** (maturidade, MIT); `ty` (Rust, ~80× incremental) é troca futura quando sair do beta.
+
+Próximo dentro da Fase 4: Dart (Analysis Server), depois Rust (rust-analyzer) e C# (Roslyn LS).
 
 ## Estado atual (8 ferramentas, TypeScript)
 

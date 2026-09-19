@@ -34,10 +34,15 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
 | `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
 
-**Roteamento por backend (achado real):** o tsgo é rápido e correto para navegação/rename, mas
-**não implementa refactorings** (extract/move retornam vazio). O **vtsls** (tsserver) tem o set
-completo. O servidor roteia cada operação para o backend certo e mantém **um processo por
-(projeto × backend)**, tudo persistente.
+**Roteamento por linguagem × operação:** o servidor escolhe o backend por extensão e operação,
+mantendo **um processo por (projeto × backend)**, tudo persistente:
+
+| Linguagem | navegação / rename | refactorings (extract/move) |
+|---|---|---|
+| TypeScript (`.ts/.tsx/.js`) | **tsgo** (rápido, não trunca) | **vtsls** (tsgo não implementa refactorings) |
+| Python (`.py`) | **basedpyright** | basedpyright |
+
+Adicionar uma linguagem = um backend novo + um match em `nav_backend`/`refactor_backend`.
 
 Resolução de posição é **semântica** (via `documentSymbol`, com refino textual da coluna no
 identificador), com fallback textual — resolve "método dentro de classe" e desambigua.
@@ -58,7 +63,7 @@ Exemplo em [`../.mcp.json`](../.mcp.json). Ajuste os caminhos absolutos:
   "mcpServers": {
     "code-intel": {
       "command": "/CAMINHO/ABS/mcp/target/release/code-intel-mcp",
-      "env": { "TSGO_BIN": "/CAMINHO/ABS/tsgo", "VTSLS_BIN": "/CAMINHO/ABS/vtsls" }
+      "env": { "TSGO_BIN": "...tsgo", "VTSLS_BIN": "...vtsls", "BASEDPYRIGHT_BIN": "...basedpyright-langserver" }
     }
   }
 }
@@ -97,6 +102,15 @@ Resultados medidos (2026-09-18), com tsgo persistente:
 | `move_symbol(K, apply=true)` @ refactor-ts | **applied=true** — cria `src/K.ts`, adiciona `import { K }`, remove decl |
 
 Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSLS_BIN` além de `TSGO_BIN`).
+
+**Python** (basedpyright) — [`test-python.jsonl`](test-python.jsonl), precisa de `BASEDPYRIGHT_BIN`:
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ py-demo | **523 refs, stable** — o gate entregou o total (server sozinho trunca 3→523) |
+| `document_symbols` / `call_hierarchy(make_account)` | classe+métodos; **20 callers** |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/523 edições |
+| `rename(Account→make_account, apply=true)` | **applied=false, net_delta=342** — colisão detectada via PUSH diagnostics |
 
 ## Arquitetura (Fases 1–2)
 
