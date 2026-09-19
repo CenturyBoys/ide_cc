@@ -16,10 +16,14 @@ use std::time::{Duration, Instant};
 // - Python: basedpyright para tudo.
 // A camada é agnóstica: adicionar linguagem = adicionar um backend + um match aqui.
 fn nav_backend(file: &str) -> &'static str {
-    if file.ends_with(".py") { "basedpyright" } else { "tsgo" }
+    if file.ends_with(".py") { "basedpyright" }
+    else if file.ends_with(".dart") { "dart" }
+    else { "tsgo" }
 }
 fn refactor_backend(file: &str) -> &'static str {
-    if file.ends_with(".py") { "basedpyright" } else { "vtsls" }
+    if file.ends_with(".py") { "basedpyright" }
+    else if file.ends_with(".dart") { "dart" }
+    else { "vtsls" }
 }
 
 struct Server {
@@ -27,6 +31,7 @@ struct Server {
     tsgo_bin: String,
     vtsls_bin: String,
     basedpyright_bin: String,
+    dart_bin: String,
 }
 
 impl Server {
@@ -39,6 +44,7 @@ impl Server {
         let (cmd, args): (&str, Vec<&str>) = match backend {
             "vtsls" => (&self.vtsls_bin, vec!["--stdio"]),
             "basedpyright" => (&self.basedpyright_bin, vec!["--stdio"]),
+            "dart" => (&self.dart_bin, vec!["language-server"]),
             _ => (&self.tsgo_bin, vec!["--lsp", "-stdio"]),
         };
         let c = LspClient::start(cmd, &args, project)?;
@@ -495,11 +501,22 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
         }));
     }
 
-    let edit = client.request(
+    // alguns servers (ex.: Dart) VALIDAM e recusam o rename na origem (colisão de nome) —
+    // devolvemos isso de forma estruturada, não como erro genérico.
+    let edit = match client.request(
         "textDocument/rename",
         json!({"textDocument":{"uri":uri},"position":{"line":l,"character":c},"newName":new_name}),
         15_000,
-    )?;
+    ) {
+        Ok(e) => e,
+        Err(reason) => {
+            return Ok(json!({
+                "operation": "rename_symbol", "applied": false, "safe": false,
+                "rejected_by_server": true, "reason": reason,
+                "symbol": symbol, "new_name": new_name
+            }))
+        }
+    };
     let mut result = verify_and_apply(&client, &edit, apply)?;
     result["operation"] = json!("rename_symbol");
     result["symbol"] = json!(symbol);
@@ -819,6 +836,7 @@ fn main() {
         tsgo_bin: std::env::var("TSGO_BIN").unwrap_or_else(|_| "tsgo".to_string()),
         vtsls_bin: std::env::var("VTSLS_BIN").unwrap_or_else(|_| "vtsls".to_string()),
         basedpyright_bin: std::env::var("BASEDPYRIGHT_BIN").unwrap_or_else(|_| "basedpyright-langserver".to_string()),
+        dart_bin: std::env::var("DART_BIN").unwrap_or_else(|_| "dart".to_string()),
     };
 
     let stdin = std::io::stdin();

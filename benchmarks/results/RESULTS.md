@@ -298,6 +298,35 @@ hierarchy completos, MIT). O mais *rápido* seria `ty` (Astral, Rust, ~80× incr
 
 ---
 
+## Run 008 — dart @ dart-demo (Fase 4: Dart)
+
+- **Data:** 2026-09-18
+- **Setup:** `node benchmarks/scripts/gen-dartproject.mjs --modules 20 --refs 8` + `dart pub get`
+- **Comando:** `node lsp-bench.mjs --server dart --fixture ../../fixtures/dart-demo --file lib/models.dart --search "class Account" --symbol Account --newname Ledger`
+- **Server:** Dart Analysis Server (`dart language-server`, LSP nativo, BSD-3)
+- **Fixture:** pacote Dart puro, 20 módulos, ~503 refs a `Account`
+
+| Métrica | Valor |
+|---|---|
+| cold-start | **291 ms** |
+| find_references — 1ª resposta | **503 refs @ 1135 ms** |
+| find_references — estável | 503 refs @ 2584 ms |
+| **Truncou?** | **Não** (completo de primeira) |
+| find_references warm p50 / p95 | 64 / 123 ms |
+| rename `Account`→`Ledger` (dry-run) | 21 arquivos, 503 edições, 57 ms |
+
+### Leitura
+
+O Dart Analysis Server **não trunca** (como o tsgo): retorna as 503 completas na 1ª resposta,
+analisando de forma eager. Cold-start baixo (291 ms) — **mas é um pacote Dart puro**; em projetos
+**Flutter** o startup é bem maior (grafo SDK+deps), como alerta o levantamento. Rode
+`dart pub get` (ou `flutter pub get`) antes: o server precisa do `package_config.json`.
+
+Padrão de servers até agora: **não truncam** tsgo e Dart (eager); **truncam** vtsls e
+basedpyright (lazy). O gate de warmup cobre ambos os casos.
+
+---
+
 ## Template para novas runs
 
 ```

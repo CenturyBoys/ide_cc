@@ -41,6 +41,7 @@ mantendo **um processo por (projeto × backend)**, tudo persistente:
 |---|---|---|
 | TypeScript (`.ts/.tsx/.js`) | **tsgo** (rápido, não trunca) | **vtsls** (tsgo não implementa refactorings) |
 | Python (`.py`) | **basedpyright** | basedpyright |
+| Dart (`.dart`) | **dart language-server** (não trunca) | dart |
 
 Adicionar uma linguagem = um backend novo + um match em `nav_backend`/`refactor_backend`.
 
@@ -111,6 +112,15 @@ Reproduzível com [`test-refactor.jsonl`](test-refactor.jsonl) (precisa de `VTSL
 | `document_symbols` / `call_hierarchy(make_account)` | classe+métodos; **20 callers** |
 | `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/523 edições |
 | `rename(Account→make_account, apply=true)` | **applied=false, net_delta=342** — colisão detectada via PUSH diagnostics |
+
+**Dart** (Dart Analysis Server) — [`test-dart.jsonl`](test-dart.jsonl), precisa de `DART_BIN` e `dart pub get` no projeto:
+
+| Cenário | Resultado |
+|---|---|
+| `find_references(Account)` @ dart-demo | **503 refs, stable** (Dart é eager, não trunca) |
+| `document_symbols` / `call_hierarchy(makeAccount)` | classe+métodos; **20 callers** |
+| `rename(Account→Ledger)` preview | net_delta=0, 21 arquivos/503 edições |
+| `rename(Account→makeAccount, apply=true)` | **rejected_by_server** — Dart valida e recusa a colisão na origem |
 
 ## Arquitetura (Fases 1–2)
 

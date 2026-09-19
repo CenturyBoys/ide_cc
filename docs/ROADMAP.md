@@ -31,7 +31,7 @@ mudança correta**.
 | **2. Edição segura** | apply→verify com net_delta | ✅ **concluída** |
 | **2b. Navegação** | document_symbols, find_symbol, workspace_symbols, call_hierarchy | ✅ **concluída** |
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
-| **4. Multi-linguagem** | **Python (basedpyright) ✅** → depois Dart, Rust, C# | 🟡 **em curso** (Python feito) |
+| **4. Multi-linguagem** | **Python ✅ · Dart ✅** → depois Rust, C# | 🟡 **em curso** (Python+Dart) |
 | **5. Otimização** | cache persistente, warmup dirigido, paralelismo, telemetria, RAM | ⬜ pendente |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
@@ -44,7 +44,18 @@ mudança correta**.
 - Confirma: camada **agnóstica**, gate **cross-language**, diagnostics **híbrido** funcionam. Teste: `mcp/test-python.jsonl`.
 - Decisão D2b: **basedpyright** (maturidade, MIT); `ty` (Rust, ~80× incremental) é troca futura quando sair do beta.
 
-Próximo dentro da Fase 4: Dart (Analysis Server), depois Rust (rust-analyzer) e C# (Roslyn LS).
+### Fase 4 — Dart: CONCLUÍDO (2026-09-18)
+
+`feature/phase-4-dart`. Dart Analysis Server (`dart language-server`, LSP nativo). Provado em
+`fixtures/dart-demo` (20 módulos, requer `dart pub get`):
+- find_references: **503, stable de primeira** (Dart é eager, NÃO trunca — como o tsgo; Run 008).
+- document_symbols, call_hierarchy (20 callers), rename preview (net_delta 0) — OK.
+- rename colisão apply=true → **rejeitado pelo server** (`rejected_by_server`, "Library already declares...").
+  Achado: backends têm defesas distintas — tsgo/basedpyright geram o edit (nosso net_delta pega),
+  Dart valida e recusa na origem. Ambos: não aplicado, disco intacto. Teste: `mcp/test-dart.jsonl`.
+- cold-start baixo (291 ms) em pacote puro; **Flutter será mais lento** (SDK+deps).
+
+Próximo dentro da Fase 4: Rust (rust-analyzer), depois C# (Roslyn LS).
 
 ## Estado atual (8 ferramentas, TypeScript)
 
