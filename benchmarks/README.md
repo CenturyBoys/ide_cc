@@ -94,5 +94,8 @@ confirmando que o cold-index race é **cross-language**. Rodar:
 **Dart (Fase 4):** `dart language-server` medido em `dart-demo` (Run 008) — **não trunca** (eager,
 como o tsgo), cold-start 291 ms em pacote puro. Rode `dart pub get` no fixture antes.
 
-Próximos: memória residente por server; monorepo maior (100+ pacotes); Rust/C#; comparar
-`ty` (Rust) vs basedpyright; divergência tsgo(64) vs vtsls(55) no zod.
+**Rust (Fase 4):** `rust-analyzer` medido em `rust-demo` (Run 009) — server **mais pesado**
+(cold ~30s: cargo metadata+check), **trunca** 0→524. `rustup component add rust-analyzer`.
+
+Próximos: memória residente por server; monorepo maior (100+ pacotes); C# (requer dotnet);
+comparar `ty` (Rust) vs basedpyright; divergência tsgo(64) vs vtsls(55) no zod.
