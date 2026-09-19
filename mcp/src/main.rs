@@ -967,6 +967,165 @@ fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(json!({"lang": lang, "build_ok": ok, "errors": errors}))
 }
 
+// ---- doctor: verifica/corrige o setup do LSP por linguagem no projeto ----
+
+fn which(bin: &str) -> bool {
+    if bin.contains('/') {
+        return Path::new(bin).exists();
+    }
+    std::env::var("PATH")
+        .map(|p| p.split(':').any(|d| Path::new(d).join(bin).exists()))
+        .unwrap_or(false)
+}
+
+fn dir_has_ext(dir: &Path, ext: &str) -> bool {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.path().extension().map(|x| x == ext).unwrap_or(false))
+        })
+        .unwrap_or(false)
+}
+
+fn detect_langs(project: &str) -> Vec<&'static str> {
+    let p = Path::new(project);
+    let mut v = vec![];
+    if p.join("pyproject.toml").exists()
+        || p.join("setup.py").exists()
+        || p.join("requirements.txt").exists()
+    {
+        v.push("python");
+    }
+    if p.join("tsconfig.json").exists() || p.join("package.json").exists() {
+        v.push("typescript");
+    }
+    if p.join("Cargo.toml").exists() {
+        v.push("rust");
+    }
+    if p.join("pubspec.yaml").exists() {
+        v.push("dart");
+    }
+    if dir_has_ext(p, "csproj") || dir_has_ext(p, "sln") {
+        v.push("csharp");
+    }
+    v
+}
+
+// Verifica (e opcionalmente corrige com fix=true) o setup por linguagem: language server disponível
+// + config de workspace correta (senão as referências saem incompletas — ver docs/LANGUAGE-SETUP.md).
+fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let fix = a["fix"].as_bool().unwrap_or(false);
+    let p = Path::new(project);
+    let langs = detect_langs(project);
+    let mut report = vec![];
+
+    for lang in &langs {
+        let (server_bin, server) = match *lang {
+            "python" => (srv.basedpyright_bin.clone(), "basedpyright"),
+            "typescript" => (srv.tsgo_bin.clone(), "tsgo/vtsls"),
+            "rust" => (srv.rust_analyzer_bin.clone(), "rust-analyzer"),
+            "dart" => (srv.dart_bin.clone(), "dart language-server"),
+            "csharp" => (srv.csharp_ls_bin.clone(), "csharp-ls"),
+            _ => (String::new(), ""),
+        };
+        let available = which(&server_bin) || (*lang == "typescript" && which(&srv.vtsls_bin));
+        let install_hint = match *lang {
+            "python" => "pip install basedpyright  (ou: npm i -g basedpyright)",
+            "typescript" => "npm i -g @typescript/native-preview @vtsls/language-server",
+            "rust" => "rustup component add rust-analyzer",
+            "dart" => "instale o Dart/Flutter SDK",
+            "csharp" => "dotnet tool install --global csharp-ls",
+            _ => "",
+        };
+        let mut cfg_ok = true;
+        let mut issue = Value::Null;
+        let mut fix_desc = Value::Null;
+        let mut applied = Value::Null;
+
+        match *lang {
+            "python" => {
+                let has_cfg = p.join("pyrightconfig.json").exists();
+                let pyproject =
+                    std::fs::read_to_string(p.join("pyproject.toml")).unwrap_or_default();
+                let has_tool = pyproject.contains("[tool.basedpyright]")
+                    || pyproject.contains("[tool.pyright]");
+                if !has_cfg && !has_tool {
+                    cfg_ok = false;
+                    issue = json!("sem [tool.basedpyright]/pyrightconfig.json → find_references INCOMPLETO (modo openFilesOnly)");
+                    let src = if p.join("src").is_dir() { "src" } else { "." };
+                    let venv = [".venv", "venv", "env"]
+                        .iter()
+                        .find(|d| p.join(d).join("pyvenv.cfg").exists())
+                        .copied();
+                    fix_desc = json!(format!(
+                        "criar pyrightconfig.json (include=[\"{src}\"]{})",
+                        venv.map(|v| format!(", venv=\"{v}\"")).unwrap_or_default()
+                    ));
+                    if fix {
+                        let mut cfg = json!({"include": [src], "useLibraryCodeForTypes": false});
+                        if let Some(v) = venv {
+                            cfg["venvPath"] = json!(".");
+                            cfg["venv"] = json!(v);
+                        }
+                        std::fs::write(
+                            p.join("pyrightconfig.json"),
+                            serde_json::to_string_pretty(&cfg).unwrap(),
+                        )
+                        .map_err(|e| format!("escrever pyrightconfig.json: {e}"))?;
+                        applied = json!(true);
+                        cfg_ok = true;
+                    }
+                }
+            }
+            "dart" => {
+                if !p.join(".dart_tool").join("package_config.json").exists() {
+                    cfg_ok = false;
+                    issue = json!("sem .dart_tool/package_config.json");
+                    fix_desc = json!("rode: dart pub get (ou flutter pub get)");
+                }
+            }
+            "typescript" => {
+                if !p.join("tsconfig.json").exists() {
+                    cfg_ok = false;
+                    issue = json!("sem tsconfig.json");
+                    fix_desc = json!("crie um tsconfig.json (monorepo: use project references)");
+                }
+            }
+            "csharp" => {
+                if !which("dotnet") {
+                    cfg_ok = false;
+                    issue = json!("dotnet SDK não encontrado no PATH");
+                    fix_desc = json!("instale o .NET SDK e defina DOTNET_ROOT");
+                }
+            }
+            _ => {}
+        }
+
+        report.push(json!({
+            "lang": lang, "server": server, "server_bin": server_bin,
+            "server_available": available,
+            "install": if available { Value::Null } else { json!(install_hint) },
+            "workspace_config": {"ok": cfg_ok, "issue": issue, "fix": fix_desc, "applied": applied},
+        }));
+    }
+
+    let problems = report
+        .iter()
+        .filter(|e| {
+            !e["server_available"].as_bool().unwrap_or(true)
+                || !e["workspace_config"]["ok"].as_bool().unwrap_or(true)
+        })
+        .count();
+    Ok(json!({
+        "project": project,
+        "languages_detected": langs,
+        "problems": problems,
+        "report": report,
+        "hint": if fix { "correções aplicadas onde possível" } else { "rode com fix=true para corrigir as configs automaticamente" },
+    }))
+}
+
 fn tools_schema() -> Value {
     json!([
         {
@@ -1079,6 +1238,18 @@ fn tools_schema() -> Value {
             }
         },
         {
+            "name": "doctor",
+            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Rode uma vez ao abrir um projeto novo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "caminho absoluto da raiz do projeto"},
+                    "fix": {"type": "boolean", "description": "true = aplica as correções possíveis (escreve configs)"}
+                },
+                "required": ["project"]
+            }
+        },
+        {
             "name": "validate_build",
             "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Comando por linguagem, override via env <LANG>_CHECK_CMD.",
             "inputSchema": {
@@ -1105,6 +1276,7 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         "extract_function" => tool_extract_function(srv, args),
         "move_symbol" => tool_move_symbol(srv, args),
         "validate_build" => tool_validate_build(srv, args),
+        "doctor" => tool_doctor(srv, args),
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
     match res {

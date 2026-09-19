@@ -54,6 +54,18 @@ venv = ".venv"               # para resolver imports do virtualenv
 
 ---
 
+## Atalho: a tool `doctor`
+
+Em vez de checar à mão, rode a ferramenta **`doctor`** do MCP ao abrir um projeto: ela detecta as
+linguagens, verifica se o language server está disponível e se a config de workspace está correta,
+e com `fix=true` **corrige** o que dá (ex.: cria o `pyrightconfig.json` do Python, detectando `src/`
+e o `.venv` automaticamente).
+
+```
+doctor(project="/caminho/do/projeto")            # só diagnóstico
+doctor(project="/caminho/do/projeto", fix=true)  # aplica as correções
+```
+
 ## Regra geral
 
 - **Referência semântica só é confiável se o server "enxerga" o projeto inteiro.** Garanta a config

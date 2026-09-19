@@ -6,6 +6,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **Tool `doctor`**: verifica o setup do projeto por linguagem (LSP disponível + config de
+  workspace) e, com `fix=true`, corrige o que dá — ex.: cria `pyrightconfig.json` p/ Python
+  (detecta `src/` e `.venv`). Fecha o gap descoberto no teste do pachamama.
+
 ## [0.4.1] - 2026-09-19
 
 ### Fixed
