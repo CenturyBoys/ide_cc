@@ -39,6 +39,31 @@ errado** (mudou literais de string e um símbolo alheio). É um **bug silencioso
 camada nem percebe que quebrou. O "time to *correct* change" do texto-cru é, na prática, muito maior
 (exige detectar e desfazer a corrupção). O semântico chega ao correto de primeira.
 
+## Cenário: DELETE / análise de impacto (precisão de referências)
+
+`node ab-refs.mjs` — "quantas referências a CLASSE `Widget` existem?" (base de "é seguro deletar?").
+
+| Método | Contagem | |
+|---|---|---|
+| `grep "Widget"` (substring) | **19** | conta `WidgetFactory`, `useWidget`, strings, comentário, const homônima |
+| `grep "\bWidget\b"` (palavra) | **14** | ainda conta strings, comentário e a **const não-relacionada** |
+| `find_references` (semântico) | **8** | só as referências reais da classe (= ground-truth) |
+
+Um agente que decide *"é seguro deletar?"* pelo grep vê 14–19 usos (**errado**, por excesso);
+o semântico vê **8** (exato). O grep também poderia **sub**-contar em outros casos (símbolo importado
+com alias), onde o texto não acompanha a semântica.
+
+## Cenários: MOVE e EXTRACT
+
+`move_symbol` e `extract_function` são operações **multi-passo** (mover declaração + atualizar
+imports; extrair trecho + criar função + substituir por chamada). Não têm um baseline de "texto-cru"
+de uma linha — o equivalente sem a camada é o agente fazendo **recorta-e-cola à mão** (propenso a
+esquecer imports/quebrar escopo). O lado **semântico** já é provado deterministicamente em
+[`../mcp/test-refactor.jsonl`](../mcp/test-refactor.jsonl): `move_symbol` cria o arquivo novo +
+atualiza os imports (build limpo); `extract_function` cria a função e substitui pela chamada — ambos
+passando pelo `apply→verify` (net_delta). Para o A/B end-to-end desses, aponte o `ab-agent.sh` para
+a tarefa correspondente (move/extract) — a skill `semantic-refactor` orienta o agente a usar as tools.
+
 ## Nível 2 — A/B do agente (Claude Code real, com/sem o MCP)
 
 Mede o loop completo do agente. Requer o CLI `claude` autenticado. Roda a MESMA tarefa em duas
