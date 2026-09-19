@@ -6,6 +6,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **`docs/LANGUAGE-SETUP.md`**: requisitos de config por linguagem para resultados corretos
+  (validado em projeto real; Python exige `[tool.basedpyright]` include/venv, senão referências
+  saem incompletas em silêncio).
+- **`benchmarks/harness/measure-project.mjs`**: medidor reutilizável (cold-start, warm p50/p95,
+  RAM, rename blast radius) para apontar em qualquer projeto/símbolo.
+
 ## [0.4.0] - 2026-09-19
 
 ### Added

@@ -49,6 +49,10 @@ cd mcp && TSGO_BIN=../benchmarks/harness/node_modules/.bin/tsgo \
   (2) `verify_build`/`validate_build` roda o build da linguagem no disco e reverte se falhar — pega
   erros que a simulação em memória não vê (ex.: `cargo check` do Rust).
 - **Diagnostics híbrido**: PULL (tsgo) ou PUSH (vtsls/pyright), detectado por capability.
+- **Config de workspace por linguagem é requisito** (ver [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md)):
+  sem ela o resultado pode sair incompleto EM SILÊNCIO. Crítico em **Python** (basedpyright sem
+  `[tool.basedpyright] include/venv` = "só arquivos abertos" → `find_references` incompleto;
+  medido no pachamama: 5 vs 61 refs). Dart exige `pub get`; Rust/C# têm cold-start pesado.
 - **Frescor**: `ensure_open` re-sincroniza (didChange) quando o mtime do disco muda → edições
   feitas fora do Claude são refletidas. **Cache entre sessões** (opt-in `CODE_INTEL_DAEMON=1`):
   daemon dono dos LSPs sobrevive ao restart do MCP (proxy Unix socket) — 2ª sessão ~23× + rápida.
