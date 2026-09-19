@@ -52,5 +52,25 @@ O script (ver `benchmarks/scripts/ab-agent.sh`): copia o fixture, roda `claude -
 classe Widget para Gadget"` nas duas condições, mede tempo e avalia a correção (mesmo critério do
 Nível 1). No modo COM, a skill `semantic-refactor` orienta o agente a usar `rename_symbol`.
 
+**Resultado (2026-09-18, Claude Code 2.1.193, 3 execuções):**
+
+| Rodada | SEM a camada | COM a camada |
+|---|---|---|
+| 1 | **INCORRETO** (6 s) | CORRETO (42 s) |
+| 2 | CORRETO (39 s) | CORRETO (30 s) |
+| 3 | CORRETO (43 s) | CORRETO (48 s) |
+| **Resumo** | **2/3 corretos** | **3/3 corretos** |
+
+**Leitura honesta.** Um modelo forte **sem** a camada é bom nesta tarefa — ele **raciocina** (lê os
+arquivos, entende as armadilhas, edita cirurgicamente), não faz `sed` cego; acertou 2/3. Mas **não é
+confiável**: falhou 1/3. **Com** a camada foi 3/3, e com **garantia** (net_delta + build) em vez de
+depender do agente ter raciocinado certo. Os tempos foram comparáveis (a ferramenta paga o startup
+do MCP; a vantagem de tempo aparece em tarefas grandes, ex.: o monorepo de 653 refs).
+
+**Conclusão dos dois níveis.** O Nível 1 (determinístico) prova que **edição de texto cega
+corrompe** (o pior caso). O Nível 2 mostra que um agente forte mitiga isso raciocinando, mas a
+camada troca "geralmente certo por raciocínio" por **"correto por construção, com garantia"** — o
+ganho é **confiabilidade**, e cresce com modelos menores, tarefas maiores e alto risco de correção.
+
 > Nota: o Nível 2 tem ruído (não-determinismo do agente) e depende de auth/ambiente; o Nível 1 é a
-> prova determinística do mecanismo. Rode o Nível 2 para a métrica end-to-end quando quiser.
+> prova determinística do mecanismo.
