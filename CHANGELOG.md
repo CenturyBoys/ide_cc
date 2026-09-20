@@ -6,6 +6,10 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Changed
+- **CI**: bump das GitHub Actions para runtime Node 24 — `actions/checkout@v4→v5` (ci + release) e
+  `softprops/action-gh-release@v2→v3`, resolvendo o aviso de deprecação do Node 20.
+
 ## [0.6.0] - 2026-09-20
 
 ### Added
