@@ -7,6 +7,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- **Símbolos decorados resolviam no `@decorator`, não no identificador → `find_references` dava
+  `count:0` em silêncio** (P1, relatório pachamama/Python). O basedpyright reporta a posição de uma
+  classe/método decorado na linha do `@dataclass`/`@classmethod`; a resolução implícita de posição
+  perguntava `textDocument/references` em cima do `@` e recebia zero. Agora a refinação **varre pra
+  frente** (até 16 linhas, cobrindo decorators empilhados) até o token do identificador — em
+  `resolve_pos` (afeta find_references/rename/move/call_hierarchy sem `line`) e no `at` de
+  `document_symbols`/`find_symbol` (agora alinhado ao identificador, como o `workspace_symbols`).
 - **`find_symbol`/`resolve_pos` — precisão do name_path composto**: uma query `Classe/metodo` não
   casa mais um método homônimo de OUTRA classe (o fallback por último segmento agora só vale quando
   a query não qualifica a classe). Inofensivo em arquivo de 1 classe (por isso o TS/viva-bff passava),
