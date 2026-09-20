@@ -1,0 +1,69 @@
+name: e2e
+
+# Suíte e2e: roda as ferramentas REAIS contra os 5 language servers REAIS sobre fixtures que
+# reproduzem cada armadilha dos relatórios de campo. Pega o que o `cargo test` (lógica pura) não vê.
+# Cada linguagem cujo LSP falhar em instalar é PULADA pelo runner (não quebra o job).
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (5 language servers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: rust toolchain (+ rust-analyzer)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-analyzer
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mcp
+
+      - name: build code-intel-mcp
+        run: cargo build --release --manifest-path mcp/Cargo.toml
+
+      # ---- language servers (best-effort; o runner pula os ausentes) ----
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install tsgo + vtsls (npm)
+        continue-on-error: true
+        run: npm i -g @typescript/native-preview @vtsls/language-server
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install basedpyright (pip)
+        continue-on-error: true
+        run: pip install --user basedpyright
+
+      - uses: dart-lang/setup-dart@v1
+        continue-on-error: true
+
+      - uses: actions/setup-dotnet@v4
+        continue-on-error: true
+        with:
+          dotnet-version: "8.0"
+      - name: install csharp-ls (dotnet tool)
+        continue-on-error: true
+        run: dotnet tool install --global csharp-ls
+
+      - name: run e2e suite
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.dotnet/tools:$PATH"
+          export RUST_ANALYZER_BIN="$(rustup which rust-analyzer || echo rust-analyzer)"
+          export BASEDPYRIGHT_BIN="basedpyright-langserver"
+          export DART_BIN="dart"
+          export CSHARP_LS_BIN="csharp-ls"
+          export TSGO_BIN="tsgo"
+          export VTSLS_BIN="vtsls"
+          export CODE_INTEL_E2E_TIMEOUT=300
+          export CODE_INTEL_E2E_SETUP_TIMEOUT=300
+          python3 mcp/e2e/run.py

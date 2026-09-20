@@ -1,0 +1,8 @@
+[project]
+name = "e2e-fixture-python"
+version = "0.0.0"
+
+# Config de workspace do basedpyright — sem isto o find_references sai INCOMPLETO em silêncio
+# (o achado crítico do relatório pachamama). O e2e valida que COM a config as refs resolvem.
+[tool.basedpyright]
+include = ["."]

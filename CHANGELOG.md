@@ -6,7 +6,24 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **Suíte e2e** (`mcp/e2e/`, job CI dedicado): roda as ferramentas REAIS contra os 5 language
+  servers REAIS sobre fixtures que reproduzem cada armadilha dos relatórios de campo (decorator,
+  método em C#, `workspace_symbols` Dart, move no-op, extract). Modo opt-in `--real` aponta pra um
+  repo grande de verdade (valida escala/warmup via `doctor smoke=true`). Cobre o que o `cargo test`
+  (lógica pura) não vê — e já pegou 2 bugs (abaixo).
+
 ### Fixed
+- **`find_symbol`/`document_symbols` — name_path composto vazio em servers ACHATADOS** (pego pela
+  suíte e2e): tsgo/basedpyright/csharp-ls retornam `SymbolInformation[]` (achatado, com
+  `containerName`), não a árvore hierárquica; o `flatten_symbols` só olhava `children`, então
+  métodos vinham como `metodo` (sem a classe) e `find_symbol("Classe/metodo")` dava `count:0` (e
+  regrediu com o tightening de precisão). Agora o flatten reconstrói `Classe/metodo` via
+  `containerName` — precisão entre classes homônimas nos DOIS formatos.
+- **`workspace_symbols` — "silent empty" no cold index** (pego pela suíte e2e, Dart): o servidor
+  devolvia `[]` VÁLIDO enquanto indexava e o retry (P5) só re-tentava em erro. Agora reintenta também
+  em VAZIO até o budget; se seguir vazio, sinaliza `warning` (pode não estar pronto) em vez de afirmar
+  "não existe". `find_source_file` (do doctor smoke) agora varre de forma determinística (ordenada).
 - **`move_symbol` reportava `safe:true` em C# sem mover nada (no-op silencioso)** (relatório
   extract/move): o csharp-ls devolvia uma ação `refactor.move` trivial (sem criar arquivo), contada
   como sucesso. Agora, se "mover para novo arquivo" **não cria arquivo** (`creates` vazio), retorna

@@ -256,14 +256,25 @@ fn sym_pos(s: &Value) -> (u64, u64) {
     )
 }
 
-// achata a árvore de documentSymbol em (name_path, kind, line, char)
+// achata a árvore de documentSymbol em (name_path, kind, line, char).
+// Suporta os DOIS formatos do LSP:
+//  - DocumentSymbol[] (hierárquico): usa `children` para o name_path "Classe/metodo".
+//  - SymbolInformation[] (achatado, ex.: tsgo/basedpyright/csharp-ls): reconstrói o name_path
+//    via `containerName` — senão métodos viriam como "metodo" (sem a classe) e queries compostas
+//    "Classe/metodo" não resolveriam / não teriam precisão entre classes homônimas.
 fn flatten_symbols(symbols: &[Value], prefix: &str, out: &mut Vec<(String, u64, u64, u64)>) {
     for s in symbols {
         let name = s["name"].as_str().unwrap_or("");
-        let fp = if prefix.is_empty() {
-            name.to_string()
-        } else {
+        let fp = if !prefix.is_empty() {
             format!("{prefix}/{name}")
+        } else if let Some(cn) = s
+            .get("containerName")
+            .and_then(|v| v.as_str())
+            .filter(|c| !c.is_empty())
+        {
+            format!("{cn}/{name}")
+        } else {
+            name.to_string()
         };
         let (l, c) = sym_pos(s);
         let kind = s["kind"].as_u64().unwrap_or(0);
@@ -1092,9 +1103,25 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(60_000);
     let start = Instant::now();
-    let res = loop {
+    // No cold index, alguns servers (Dart) devolvem [] VÁLIDO enquanto ainda indexam — não é erro.
+    // Reintenta tanto em erro quanto em VAZIO até o budget; senão o "silent empty" volta (bug Dart).
+    let mut res = json!([]);
+    let mut timed_out = false;
+    loop {
         match client.request("workspace/symbol", json!({"query": query}), per_req) {
-            Ok(r) => break r,
+            Ok(r) => {
+                let empty = r.as_array().map(|a| a.is_empty()).unwrap_or(true);
+                if !empty {
+                    res = r;
+                    break;
+                }
+                if start.elapsed().as_millis() >= budget {
+                    res = r; // aceita o vazio após o budget (símbolo pode realmente não existir)
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(400));
+            }
             Err(e) => {
                 if start.elapsed().as_millis() >= budget {
                     return Ok(json!({
@@ -1106,7 +1133,7 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
                 std::thread::sleep(Duration::from_millis(500));
             }
         }
-    };
+    }
     let root = client.root().to_string();
     let list: Vec<Value> = res
         .as_array()
@@ -1121,7 +1148,16 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
                    "at": format!("{}:{}:{}", rel(&root, uri), l + 1, c + 1)})
         })
         .collect();
-    Ok(json!({"query": query, "count": list.len(), "symbols": list}))
+    // vazio após o budget: sinaliza que PODE ser índice não-pronto (não afirma "não existe").
+    let warning = if timed_out {
+        json!(format!(
+            "resultado vazio após {budget}ms — {}",
+            index_not_ready_hint()
+        ))
+    } else {
+        Value::Null
+    };
+    Ok(json!({"query": query, "count": list.len(), "symbols": list, "warning": warning}))
 }
 
 fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
@@ -1225,7 +1261,11 @@ fn detect_langs(project: &str) -> Vec<&'static str> {
 fn find_source_file(project: &str, ext: &str) -> Option<String> {
     fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32) -> Option<String> {
         let mut subdirs = vec![];
-        for e in std::fs::read_dir(dir).ok()?.flatten() {
+        // ordena as entradas -> descoberta DETERMINÍSTICA (o smoke test escolhe sempre o mesmo
+        // arquivo, independente da ordem do SO).
+        let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
             if *budget == 0 {
                 return None;
             }
