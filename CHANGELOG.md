@@ -15,6 +15,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   explícito. Idempotente para TS/Rust/etc. Coberto por testes unitários.
 
 ### Changed
+- **Setup Python (docs+install)**: `install.sh`/`install.ps1` passam a avisar, ao final, que o
+  instalador **não** configura o workspace por projeto — é preciso rodar `doctor(fix=true)` dentro
+  de cada projeto (crítico em Python: sem a config, `find_references` sai incompleto em silêncio).
+  README (EN+PT) documenta o mesmo, com a cobertura de venv do `doctor` (`.venv`/`venv`/`env` →
+  cobre uv e venv nativo) e a pegadinha do poetry (venv fora do projeto por padrão → não detectado).
 - **CI**: bump das GitHub Actions para runtime Node 24 — `actions/checkout@v4→v5` (ci + release) e
   `softprops/action-gh-release@v2→v3`, resolvendo o aviso de deprecação do Node 20.
 - **CI**: passa a rodar `cargo test --release` (step bloqueante) — guarda os testes unitários de
