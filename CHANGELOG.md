@@ -6,6 +6,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-20
+
 ### Added
 - **Suporte a Windows** (x86_64): release passa a publicar `code-intel-mcp-x86_64-pc-windows-msvc.zip`
   (workflow com runner `windows-latest`); novo instalador PowerShell [`install.ps1`]. O core do MCP
@@ -95,7 +97,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.3.0...v0.4.0
