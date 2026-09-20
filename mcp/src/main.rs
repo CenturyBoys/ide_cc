@@ -174,6 +174,7 @@ fn warmup_references(
     uri: &str,
     line: u64,
     ch: u64,
+    budget_override: Option<u128>,
 ) -> Result<(Vec<Value>, bool, u128, u32), String> {
     let start = Instant::now();
     let mut last: i64 = -1;
@@ -182,10 +183,13 @@ fn warmup_references(
     let mut refs: Vec<Value> = vec![];
     // Teto de warmup. Default 60s (rust-analyzer roda cargo metadata + check no cold start, ~30s
     // no fixture medido). Repos grandes em cold start podem precisar de mais — CODE_INTEL_WARMUP_MS.
-    let budget_ms: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60_000);
+    // `budget_override` permite um teto curto por tentativa (ex.: smoke tentando vários símbolos).
+    let budget_ms: u128 = budget_override.unwrap_or_else(|| {
+        std::env::var("CODE_INTEL_WARMUP_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60_000)
+    });
     while start.elapsed().as_millis() < budget_ms {
         polls += 1;
         // rust-analyzer LANÇA erro ('No references found at position') enquanto indexa;
@@ -914,7 +918,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
-    let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c)?;
+    let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c, None)?;
     let warning = if stable {
         Value::Null
     } else {
@@ -1041,7 +1045,7 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     }
 
     // GATE de warmup: índice quente ANTES de renomear (senão o WorkspaceEdit é incompleto).
-    let (_refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c)?;
+    let (_refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c, None)?;
     if !stable {
         return Ok(json!({
             "applied": false, "error": "index_not_ready",
@@ -1490,64 +1494,119 @@ fn detect_langs(project: &str) -> Vec<&'static str> {
     v
 }
 
-// Acha um arquivo-fonte da linguagem (por extensão), preferindo src/, pulando venv/build/vcs.
-// Busca limitada (budget de entradas) para não varrer repos gigantes.
-fn find_source_file(project: &str, ext: &str) -> Option<String> {
-    fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32) -> Option<String> {
-        let mut subdirs = vec![];
-        // ordena as entradas -> descoberta DETERMINÍSTICA (o smoke test escolhe sempre o mesmo
-        // arquivo, independente da ordem do SO).
-        let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+// Diretórios ignorados na busca de fontes.
+fn is_skip_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".venv"
+            | "venv"
+            | "env"
+            | "node_modules"
+            | "target"
+            | "__pycache__"
+            | "bin"
+            | "obj"
+            | ".dart_tool"
+            | "dist"
+            | "build"
+            | "examples"
+            | "example"
+            | "samples"
+            | "tests"
+            | "test"
+            | "__tests__"
+            | "benches"
+            | "benchmark"
+            | "benchmarks"
+            | "e2e"
+    )
+}
+
+// Arquivos "não-biblioteca" que o smoke deve evitar: playgrounds, exemplos, testes, gerados —
+// costumam ter símbolos SEM referências (ex.: zod/play.ts), o que confunde o smoke.
+fn is_scratch_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    if n.ends_with(".g.dart") || n.ends_with(".freezed.dart") || n.ends_with(".d.ts") {
+        return true;
+    }
+    if n.contains(".test.") || n.contains(".spec.") || n.contains("_test.") || n.contains("_spec.")
+    {
+        return true;
+    }
+    let stem = n.split('.').next().unwrap_or(&n);
+    matches!(
+        stem,
+        "play"
+            | "playground"
+            | "scratch"
+            | "demo"
+            | "example"
+            | "examples"
+            | "sample"
+            | "samples"
+            | "bench"
+            | "benchmark"
+            | "benchmarks"
+            | "conftest"
+    )
+}
+
+// Coleta até `max` arquivos-fonte da linguagem, pulando build/vcs/test/scratch, PREFERINDO os que
+// estão sob src/ ou lib/ (mais provável conter símbolos de biblioteca referenciados).
+fn find_source_files(project: &str, ext: &str, max: usize) -> Vec<String> {
+    fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32, out: &mut Vec<String>) {
+        if *budget == 0 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = rd.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
+        let mut subdirs = vec![];
         for e in entries {
             if *budget == 0 {
-                return None;
+                return;
             }
             *budget -= 1;
             let path = e.path();
             let name = e.file_name();
             let name = name.to_string_lossy();
             if path.is_dir() {
-                if matches!(
-                    name.as_ref(),
-                    ".git"
-                        | ".venv"
-                        | "venv"
-                        | "env"
-                        | "node_modules"
-                        | "target"
-                        | "__pycache__"
-                        | "bin"
-                        | "obj"
-                        | ".dart_tool"
-                        | "dist"
-                        | "build"
-                ) {
-                    continue;
+                if !is_skip_dir(name.as_ref()) {
+                    subdirs.push(path);
                 }
-                subdirs.push(path);
-            } else if path.extension().map(|x| x == ext).unwrap_or(false) {
-                return path
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|r| r.to_string_lossy().replace('\\', "/"));
+            } else if path.extension().map(|x| x == ext).unwrap_or(false)
+                && !is_scratch_name(name.as_ref())
+            {
+                if let Ok(r) = path.strip_prefix(root) {
+                    out.push(r.to_string_lossy().replace('\\', "/"));
+                }
             }
         }
         for d in subdirs {
-            if let Some(f) = walk(&d, ext, root, budget) {
-                return Some(f);
-            }
+            walk(&d, ext, root, budget, out);
         }
-        None
     }
     let root = Path::new(project);
-    let mut budget = 5000u32;
-    if root.join("src").is_dir() {
-        if let Some(f) = walk(&root.join("src"), ext, root, &mut budget) {
-            return Some(f);
-        }
-    }
-    walk(root, ext, root, &mut budget)
+    let mut budget = 20_000u32;
+    let mut all = vec![];
+    walk(root, ext, root, &mut budget, &mut all);
+    // preferência: caminhos sob src/ ou lib/ primeiro (ordenação estável mantém determinismo)
+    all.sort_by_key(|p| {
+        let pref = p.contains("/src/")
+            || p.starts_with("src/")
+            || p.contains("/lib/")
+            || p.starts_with("lib/");
+        !pref // false (=0) antes de true
+    });
+    all.truncate(max);
+    all
+}
+
+fn find_source_file(project: &str, ext: &str) -> Option<String> {
+    find_source_files(project, ext, 1).into_iter().next()
 }
 
 // P2: smoke test END-TO-END — roda um find_references REAL num símbolo descoberto e exige
@@ -1561,54 +1620,79 @@ fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
         "csharp" => "cs",
         _ => return json!({"ran": false, "reason": "linguagem sem smoke test"}),
     };
-    let Some(rel_file) = find_source_file(project, ext) else {
+    let files = find_source_files(project, ext, 6);
+    if files.is_empty() {
         return json!({"ran": false, "reason": format!("nenhum arquivo .{ext} encontrado")});
-    };
-    let Ok(client) = srv.client(project, nav_backend(&rel_file)) else {
-        return json!({"ran": false, "reason": "falha ao subir o language server"});
-    };
-    let abs = format!("{}/{}", project.trim_end_matches('/'), rel_file);
-    if client.ensure_open(&abs).is_err() {
-        return json!({"ran": false, "reason": "falha ao abrir o arquivo"});
     }
-    let Ok(syms) = document_symbols(&client, &abs) else {
-        return json!({"ran": false, "reason": "documentSymbol falhou"});
-    };
-    let mut flat = vec![];
-    flatten_symbols(&syms, "", &mut flat);
-    // símbolos referenciáveis: Class(5), Method(6), Interface(11), Function(12), Struct(23)
-    let candidates: Vec<_> = flat
-        .iter()
-        .filter(|(_, k, ..)| matches!(k, 5 | 6 | 11 | 12 | 23))
-        .take(8)
-        .cloned()
-        .collect();
-    if candidates.is_empty() {
-        return json!({"ran": false, "reason": "nenhum símbolo referenciável no arquivo"});
-    }
-    let uri = path_to_uri(&abs);
-    for (fp, _k, _l, _c) in &candidates {
-        let ident = base_name(fp.rsplit('/').next().unwrap_or(fp));
-        let Ok((rl, rc)) = resolve_pos(&client, &abs, ident, None) else {
+    // Teto total do smoke (= budget de warmup); primeira tentativa absorve o cold start, as demais
+    // usam budget curto (um símbolo de 0 refs não deve consumir tudo — foi o que o zod/play.ts expôs).
+    let total_budget: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    let start = Instant::now();
+    let mut attempts = 0u32;
+    let mut tried = 0u32;
+    let mut last_ident = String::new();
+    let mut last_file = String::new();
+    for rel_file in &files {
+        let Ok(client) = srv.client(project, nav_backend(rel_file)) else {
             continue;
         };
-        let Ok((refs, stable, ms, polls)) = warmup_references(&client, &uri, rl, rc) else {
+        let abs = format!("{}/{}", project.trim_end_matches('/'), rel_file);
+        if client.ensure_open(&abs).is_err() {
+            continue;
+        }
+        let Ok(syms) = document_symbols(&client, &abs) else {
             continue;
         };
-        if !stable {
-            // índice não convergiu no budget — não adianta tentar outros símbolos
-            return json!({"ran": true, "ok": false, "symbol": ident, "file": rel_file,
-                "count": refs.len(), "stable": false, "warmup_ms": ms, "polls": polls,
-                "issue": index_not_ready_hint()});
+        let mut flat = vec![];
+        flatten_symbols(&syms, "", &mut flat);
+        // símbolos referenciáveis: Class(5), Method(6), Interface(11), Function(12), Struct(23)
+        let candidates: Vec<_> = flat
+            .iter()
+            .filter(|(_, k, ..)| matches!(k, 5 | 6 | 11 | 12 | 23))
+            .take(4)
+            .cloned()
+            .collect();
+        let uri = path_to_uri(&abs);
+        for (fp, _k, _l, _c) in &candidates {
+            let elapsed = start.elapsed().as_millis();
+            if elapsed + 2_000 >= total_budget {
+                break;
+            }
+            let ident = base_name(fp.rsplit('/').next().unwrap_or(fp));
+            let Ok((rl, rc)) = resolve_pos(&client, &abs, ident, None) else {
+                continue;
+            };
+            // 1ª tentativa: budget generoso (cold start). Demais: curto (rejeita 0-ref rápido).
+            let per = if attempts == 0 {
+                total_budget.min(90_000)
+            } else {
+                (total_budget - elapsed).min(15_000)
+            };
+            attempts += 1;
+            tried += 1;
+            last_ident = ident.to_string();
+            last_file = rel_file.clone();
+            let Ok((refs, stable, ms, polls)) = warmup_references(&client, &uri, rl, rc, Some(per))
+            else {
+                continue;
+            };
+            if stable && !refs.is_empty() {
+                return json!({"ran": true, "ok": true, "symbol": ident, "file": rel_file,
+                    "count": refs.len(), "stable": true, "warmup_ms": ms, "polls": polls});
+            }
         }
-        if !refs.is_empty() {
-            return json!({"ran": true, "ok": true, "symbol": ident, "file": rel_file,
-                "count": refs.len(), "stable": true, "warmup_ms": ms, "polls": polls});
+        if start.elapsed().as_millis() + 2_000 >= total_budget {
+            break;
         }
-        // stable mas 0 refs: segue tentando (índice já quente → próximos são rápidos)
     }
-    json!({"ran": true, "ok": false, "file": rel_file, "count": 0, "stable": true,
-        "issue": "resolved_zero: nenhum símbolo do arquivo resolveu referências com índice estável — config de workspace provavelmente incompleta (crítico em Python: [tool.basedpyright]/venv) ou arquivo isolado"})
+    // Nenhum símbolo com referências estáveis — pode ser índice frio OU símbolos-folha nos arquivos
+    // testados. Mensagem acionável, distinguindo dos casos "não rodou".
+    json!({"ran": true, "ok": false, "symbols_tried": tried, "last_symbol": last_ident,
+        "last_file": last_file,
+        "issue": format!("nenhum símbolo com referências estáveis em {tried} tentativa(s) — índice pode estar frio (ligue CODE_INTEL_DAEMON=1 e/ou aumente CODE_INTEL_WARMUP_MS) ou os símbolos testados são folha/sem uso")})
 }
 
 // Verifica (e opcionalmente corrige com fix=true) o setup por linguagem: language server disponível
