@@ -6,7 +6,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
-## [0.7.2] - 2026-09-20
+### Fixed
+- **`doctor smoke` escolhia símbolo de arquivo scratch/0-refs → `index_not_ready` enganoso + budget
+  desperdiçado** (achado rodando `--real` em OSS: `zod/play.ts`, símbolo `transform` com 0 refs
+  girou 715 polls/180s). Agora o smoke: (1) pula arquivos não-biblioteca (`play`/`example`/`test`/
+  `*.g.dart`/`*.d.ts`…) e **prefere `src/`|`lib/`**; (2) tenta **vários arquivos × candidatos** com
+  budget curto por tentativa (a 1ª absorve o cold start), parando no 1º símbolo com refs estáveis;
+  (3) `warmup_references` ganhou budget por-chamada. Um símbolo folha não consome mais o teto todo.
 
 ### Added
 - **Camada ADVERSARIAL de testes e2e + `docs/TEST-STRATEGY.md`**: além dos casos positivos, agora há
