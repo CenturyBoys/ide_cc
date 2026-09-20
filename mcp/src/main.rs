@@ -719,6 +719,31 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
     let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c)?;
+    let warning = if stable {
+        Value::Null
+    } else {
+        json!(index_not_ready_hint())
+    };
+    // P7: modo resumido — só contagem + arquivos distintos (+ por-arquivo). Evita estourar o limite
+    // de tokens do cliente em símbolos muito usados (resultado grande vira dezenas de KB).
+    if a["summary"].as_bool().unwrap_or(false) {
+        let mut by_file: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        for r in &refs {
+            let u = r["uri"].as_str().unwrap_or("");
+            *by_file.entry(rel(client.root(), u)).or_insert(0) += 1;
+        }
+        return Ok(json!({
+            "symbol": symbol,
+            "count": refs.len(),
+            "files": by_file.len(),
+            "stable": stable,
+            "warning": warning,
+            "warmup_ms": warmup_ms,
+            "polls": polls,
+            "by_file": by_file,
+        }));
+    }
     let mut locs: Vec<String> = refs
         .iter()
         .map(|r| {
@@ -733,7 +758,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
         "symbol": symbol,
         "count": refs.len(),
         "stable": stable,
-        "warning": if stable { Value::Null } else { json!(index_not_ready_hint()) },
+        "warning": warning,
         "warmup_ms": warmup_ms,
         "polls": polls,
         "references": locs,
@@ -1001,7 +1026,33 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         "tsgo"
     };
     let client = srv.client(project, backend)?;
-    let res = client.request("workspace/symbol", json!({"query": query}), 10_000)?;
+    // P5: no cold index o workspace/symbol estourava timeout SECO. Agora reintenta dentro de um
+    // budget (CODE_INTEL_WARMUP_MS, default 60s) e, se não vier, devolve index_not_ready ACIONÁVEL
+    // em vez de erro cru. Timeout por request via CODE_INTEL_WS_TIMEOUT_MS (default 10s).
+    let per_req: u64 = std::env::var("CODE_INTEL_WS_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let budget: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    let start = Instant::now();
+    let res = loop {
+        match client.request("workspace/symbol", json!({"query": query}), per_req) {
+            Ok(r) => break r,
+            Err(e) => {
+                if start.elapsed().as_millis() >= budget {
+                    return Ok(json!({
+                        "query": query, "count": 0, "stable": false,
+                        "warning": index_not_ready_hint(),
+                        "detail": format!("workspace/symbol não respondeu em {budget}ms (cold index): {e}"),
+                    }));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    };
     let root = client.root().to_string();
     let list: Vec<Value> = res
         .as_array()
@@ -1115,11 +1166,131 @@ fn detect_langs(project: &str) -> Vec<&'static str> {
     v
 }
 
+// Acha um arquivo-fonte da linguagem (por extensão), preferindo src/, pulando venv/build/vcs.
+// Busca limitada (budget de entradas) para não varrer repos gigantes.
+fn find_source_file(project: &str, ext: &str) -> Option<String> {
+    fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32) -> Option<String> {
+        let mut subdirs = vec![];
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            if *budget == 0 {
+                return None;
+            }
+            *budget -= 1;
+            let path = e.path();
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if matches!(
+                    name.as_ref(),
+                    ".git"
+                        | ".venv"
+                        | "venv"
+                        | "env"
+                        | "node_modules"
+                        | "target"
+                        | "__pycache__"
+                        | "bin"
+                        | "obj"
+                        | ".dart_tool"
+                        | "dist"
+                        | "build"
+                ) {
+                    continue;
+                }
+                subdirs.push(path);
+            } else if path.extension().map(|x| x == ext).unwrap_or(false) {
+                return path
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|r| r.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        for d in subdirs {
+            if let Some(f) = walk(&d, ext, root, budget) {
+                return Some(f);
+            }
+        }
+        None
+    }
+    let root = Path::new(project);
+    let mut budget = 5000u32;
+    if root.join("src").is_dir() {
+        if let Some(f) = walk(&root.join("src"), ext, root, &mut budget) {
+            return Some(f);
+        }
+    }
+    walk(root, ext, root, &mut budget)
+}
+
+// P2: smoke test END-TO-END — roda um find_references REAL num símbolo descoberto e exige
+// count>0 && stable. Pega o que os checks de binário+config NÃO pegam (posição, warmup, escala).
+fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
+    let ext = match lang {
+        "python" => "py",
+        "typescript" => "ts",
+        "rust" => "rs",
+        "dart" => "dart",
+        "csharp" => "cs",
+        _ => return json!({"ran": false, "reason": "linguagem sem smoke test"}),
+    };
+    let Some(rel_file) = find_source_file(project, ext) else {
+        return json!({"ran": false, "reason": format!("nenhum arquivo .{ext} encontrado")});
+    };
+    let Ok(client) = srv.client(project, nav_backend(&rel_file)) else {
+        return json!({"ran": false, "reason": "falha ao subir o language server"});
+    };
+    let abs = format!("{}/{}", project.trim_end_matches('/'), rel_file);
+    if client.ensure_open(&abs).is_err() {
+        return json!({"ran": false, "reason": "falha ao abrir o arquivo"});
+    }
+    let Ok(syms) = document_symbols(&client, &abs) else {
+        return json!({"ran": false, "reason": "documentSymbol falhou"});
+    };
+    let mut flat = vec![];
+    flatten_symbols(&syms, "", &mut flat);
+    // símbolos referenciáveis: Class(5), Method(6), Interface(11), Function(12), Struct(23)
+    let candidates: Vec<_> = flat
+        .iter()
+        .filter(|(_, k, ..)| matches!(k, 5 | 6 | 11 | 12 | 23))
+        .take(8)
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        return json!({"ran": false, "reason": "nenhum símbolo referenciável no arquivo"});
+    }
+    let uri = path_to_uri(&abs);
+    for (fp, _k, _l, _c) in &candidates {
+        let ident = base_name(fp.rsplit('/').next().unwrap_or(fp));
+        let Ok((rl, rc)) = resolve_pos(&client, &abs, ident, None) else {
+            continue;
+        };
+        let Ok((refs, stable, ms, polls)) = warmup_references(&client, &uri, rl, rc) else {
+            continue;
+        };
+        if !stable {
+            // índice não convergiu no budget — não adianta tentar outros símbolos
+            return json!({"ran": true, "ok": false, "symbol": ident, "file": rel_file,
+                "count": refs.len(), "stable": false, "warmup_ms": ms, "polls": polls,
+                "issue": index_not_ready_hint()});
+        }
+        if !refs.is_empty() {
+            return json!({"ran": true, "ok": true, "symbol": ident, "file": rel_file,
+                "count": refs.len(), "stable": true, "warmup_ms": ms, "polls": polls});
+        }
+        // stable mas 0 refs: segue tentando (índice já quente → próximos são rápidos)
+    }
+    json!({"ran": true, "ok": false, "file": rel_file, "count": 0, "stable": true,
+        "issue": "resolved_zero: nenhum símbolo do arquivo resolveu referências com índice estável — config de workspace provavelmente incompleta (crítico em Python: [tool.basedpyright]/venv) ou arquivo isolado"})
+}
+
 // Verifica (e opcionalmente corrige com fix=true) o setup por linguagem: language server disponível
 // + config de workspace correta (senão as referências saem incompletas — ver docs/LANGUAGE-SETUP.md).
+// Com smoke=true, roda também um find_references REAL end-to-end por linguagem (pega o que os checks
+// estáticos não pegam — P2 do relatório pachamama).
 fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let fix = a["fix"].as_bool().unwrap_or(false);
+    let smoke = a["smoke"].as_bool().unwrap_or(false);
     let p = Path::new(project);
     let langs = detect_langs(project);
     let mut report = vec![];
@@ -1206,11 +1377,21 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
             _ => {}
         }
 
+        // P2: só roda o smoke se binário+config estiverem ok (senão o resultado seria óbvio).
+        let smoke_res = if smoke && available && cfg_ok {
+            doctor_smoke(srv, project, lang)
+        } else if smoke {
+            json!({"ran": false, "reason": "pré-requisito falhou (server/config)"})
+        } else {
+            Value::Null
+        };
+
         report.push(json!({
             "lang": lang, "server": server, "server_bin": server_bin,
             "server_available": available,
             "install": if available { Value::Null } else { json!(install_hint) },
             "workspace_config": {"ok": cfg_ok, "issue": issue, "fix": fix_desc, "applied": applied},
+            "smoke": smoke_res,
         }));
     }
 
@@ -1219,14 +1400,24 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         .filter(|e| {
             !e["server_available"].as_bool().unwrap_or(true)
                 || !e["workspace_config"]["ok"].as_bool().unwrap_or(true)
+                // smoke conta como problema só quando rodou e falhou
+                || (e["smoke"]["ran"].as_bool().unwrap_or(false)
+                    && !e["smoke"]["ok"].as_bool().unwrap_or(true))
         })
         .count();
+    let hint = if !smoke {
+        "checagem ESTÁTICA (binário+config). Rode com smoke=true p/ o teste end-to-end (find_references real) — pega posição/warmup/escala que os checks estáticos não veem."
+    } else if fix {
+        "correções aplicadas onde possível; smoke test end-to-end executado"
+    } else {
+        "smoke test end-to-end executado; rode com fix=true para corrigir configs automaticamente"
+    };
     Ok(json!({
         "project": project,
         "languages_detected": langs,
         "problems": problems,
         "report": report,
-        "hint": if fix { "correções aplicadas onde possível" } else { "rode com fix=true para corrigir as configs automaticamente" },
+        "hint": hint,
     }))
 }
 
@@ -1241,7 +1432,8 @@ fn tools_schema() -> Value {
                     "project": {"type": "string", "description": "caminho ABSOLUTO da raiz do projeto"},
                     "file": {"type": "string", "description": "caminho do arquivo RELATIVO ao project"},
                     "symbol": {"type": "string", "description": "nome do símbolo (ex.: 'ZodType')"},
-                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"}
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"},
+                    "summary": {"type": "boolean", "description": "opcional: true = só {count, files, by_file} (sem cada path:linha:col) — evita estourar o limite de tokens em símbolos muito usados"}
                 },
                 "required": ["project", "file", "symbol"]
             }
@@ -1343,12 +1535,13 @@ fn tools_schema() -> Value {
         },
         {
             "name": "doctor",
-            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Rode uma vez ao abrir um projeto novo.",
+            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Com smoke=true, roda um find_references REAL end-to-end e exige count>0 && stable (pega posição/warmup/escala que os checks estáticos não veem). Rode uma vez ao abrir um projeto novo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "caminho absoluto da raiz do projeto"},
-                    "fix": {"type": "boolean", "description": "true = aplica as correções possíveis (escreve configs)"}
+                    "fix": {"type": "boolean", "description": "true = aplica as correções possíveis (escreve configs)"},
+                    "smoke": {"type": "boolean", "description": "true = roda um find_references real por linguagem (teste end-to-end); pode demorar no cold start (ligue CODE_INTEL_DAEMON=1)"}
                 },
                 "required": ["project"]
             }
