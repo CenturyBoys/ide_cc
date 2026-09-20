@@ -26,3 +26,5 @@ jobs:
         run: cargo clippy --release || true
       - name: build (release)
         run: cargo build --release
+      - name: test
+        run: cargo test --release
