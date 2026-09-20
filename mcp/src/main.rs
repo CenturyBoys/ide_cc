@@ -219,12 +219,15 @@ fn strip_sigs(path: &str) -> String {
 }
 
 // Casa um name_path achatado `fp` (possivelmente com assinatura de método, ex.: csharp-ls)
-// contra a `query` do usuário (sem assinatura): igualdade exata, sufixo "/query", ou último
-// segmento igual. Normaliza `fp` antes de comparar, então métodos C# passam a resolver.
+// contra a `query` do usuário (sem assinatura). Normaliza `fp` antes de comparar (então métodos
+// C# resolvem). Critérios: igualdade exata, sufixo "/query" ou — SÓ quando a query não qualifica
+// a classe (sem '/') — último segmento igual. Assim uma query composta "A/foo" não casa "B/foo".
 fn name_path_matches(fp: &str, query: &str) -> bool {
     let nfp = strip_sigs(fp);
-    let last = base_name(query.rsplit('/').next().unwrap_or(query));
-    nfp == query || nfp.ends_with(&format!("/{query}")) || nfp.rsplit('/').next() == Some(last)
+    if nfp == query || nfp.ends_with(&format!("/{query}")) {
+        return true;
+    }
+    !query.contains('/') && nfp.rsplit('/').next() == Some(base_name(query))
 }
 
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
@@ -260,8 +263,13 @@ fn resolve_pos(
                         .find(|(fp, ..)| strip_sigs(fp).ends_with(&suffix))
                 })
                 .or_else(|| {
-                    flat.iter()
-                        .find(|(fp, ..)| strip_sigs(fp).rsplit('/').next() == Some(last))
+                    // fallback por último segmento só quando a query não qualifica a classe
+                    if name_path.contains('/') {
+                        None
+                    } else {
+                        flat.iter()
+                            .find(|(fp, ..)| strip_sigs(fp).rsplit('/').next() == Some(last))
+                    }
                 });
             if let Some((_, _, l, c)) = hit {
                 // O documentSymbol às vezes aponta pro início da declaração (ex.: 'export'),
@@ -1583,6 +1591,21 @@ mod tests {
 
         let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
         assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    // Garantia cross-linguagem (relatório viva-bff, TypeScript/tsgo): nomes crus, sem assinatura,
+    // com name_path composto ("Classe/metodo") — o mesmo padrão que sempre funcionou no TS deve
+    // continuar funcionando após a normalização (idempotente), sem regressão.
+    #[test]
+    fn name_path_matches_typescript_composite_path_no_regression() {
+        let fp = "GetBalanceResolver/resolve";
+        assert!(name_path_matches(fp, "GetBalanceResolver/resolve"));
+        assert!(name_path_matches(fp, "resolve"));
+        // classe homônima de método em outro resolver não deve casar quando a classe é especificada
+        assert!(!name_path_matches(
+            "GetProfileResolver/resolve",
+            "GetBalanceResolver/resolve"
+        ));
     }
 
     #[test]

@@ -7,6 +7,10 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- **`find_symbol`/`resolve_pos` — precisão do name_path composto**: uma query `Classe/metodo` não
+  casa mais um método homônimo de OUTRA classe (o fallback por último segmento agora só vale quando
+  a query não qualifica a classe). Inofensivo em arquivo de 1 classe (por isso o TS/viva-bff passava),
+  mas evita over-match em arquivos com várias classes. Coberto por teste (cenário viva-bff).
 - **`find_symbol` não resolvia métodos em C#** (`count: 0` para `kind: Method`, embora `Class`/`Field`
   funcionassem). Causa: o `csharp-ls` anexa a assinatura ao nome do método no `documentSymbol`
   (ex.: `HandleAsync(string x, Guid y)`), e o casamento por `name_path` comparava contra o nome cru.
