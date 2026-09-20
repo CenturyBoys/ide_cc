@@ -6,6 +6,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-20
+
 ### Added
 - **Camada ADVERSARIAL de testes e2e + `docs/TEST-STRATEGY.md`**: além dos casos positivos, agora há
   casos que exigem o **bloqueio** de operações destrutivas (rename com colisão, para keyword, noop,
@@ -222,7 +224,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0
