@@ -6,7 +6,19 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **`CODE_INTEL_WARMUP_MS`** (P3): teto de warmup do `find_references`/rename configurável (default
+  60000ms) para repos grandes em cold start. O aviso `index_not_ready` agora é **acionável** — sugere
+  ligar `CODE_INTEL_DAEMON=1` (sem daemon o warmup reinicia a cada chamada) e/ou esticar o teto.
+
 ### Fixed
+- **`INSTALL_LSP=1` não instalava o basedpyright** (P4): só testava `pip`. Agora tenta
+  `uv → pipx → pip → pip3 → python3 -m pip → npm` (`install.sh` e `install.ps1`) — o relatório
+  pachamama usava `uv` e ficava sem backend Python, caindo direto em `index_not_ready`.
+
+### Changed
+- **Descrição do `find_references` agnóstica de linguagem** (P6): não diz mais "via tsgo"; lista o
+  backend por linguagem (tsgo/basedpyright/rust-analyzer/csharp-ls/dart).
 - **Símbolos decorados resolviam no `@decorator`, não no identificador → `find_references` dava
   `count:0` em silêncio** (P1, relatório pachamama/Python). O basedpyright reporta a posição de uma
   classe/método decorado na linha do `@dataclass`/`@classmethod`; a resolução implícita de posição
