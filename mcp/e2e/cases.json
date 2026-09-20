@@ -1,0 +1,143 @@
+[
+  {
+    "lang": "python",
+    "project": "fixtures/python",
+    "cases": [
+      {
+        "name": "find_references em classe DECORADA (@dataclass) sem line (bug P1)",
+        "tool": "find_references",
+        "args": {"file": "models.py", "symbol": "ResponseModel"},
+        "assert": [{"path": "count", "op": ">", "value": 0}, {"path": "stable", "op": "==", "value": true}]
+      },
+      {
+        "name": "find_symbol de MÉTODO em classe decorada (Classe/metodo)",
+        "tool": "find_symbol",
+        "args": {"file": "models.py", "name_path": "ResponseModel/make"},
+        "assert": [{"path": "count", "op": "==", "value": 1}]
+      },
+      {
+        "name": "find_references controle (classe sem decorator)",
+        "tool": "find_references",
+        "args": {"file": "models.py", "symbol": "ResponseCode"},
+        "assert": [{"path": "count", "op": ">", "value": 0}]
+      },
+      {
+        "name": "doctor smoke=true end-to-end (find_references real)",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "problems", "op": "==", "value": 0}, {"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "typescript",
+    "project": "fixtures/typescript",
+    "cases": [
+      {
+        "name": "find_symbol name_path composto NÃO casa método homônimo de outra classe",
+        "tool": "find_symbol",
+        "args": {"file": "widget.ts", "name_path": "Widget/render"},
+        "assert": [{"path": "count", "op": "==", "value": 1}]
+      },
+      {
+        "name": "find_references de classe",
+        "tool": "find_references",
+        "args": {"file": "widget.ts", "symbol": "Widget"},
+        "assert": [{"path": "count", "op": ">", "value": 0}]
+      },
+      {
+        "name": "rename_symbol preview seguro (net_delta 0, não toca disco)",
+        "tool": "rename_symbol",
+        "args": {"file": "widget.ts", "symbol": "Widget", "new_name": "WidgetX", "apply": false},
+        "assert": [{"path": "safe", "op": "==", "value": true}, {"path": "net_delta", "op": "==", "value": 0}]
+      },
+      {
+        "name": "move_symbol cria arquivo novo (suportado em TS/vtsls)",
+        "tool": "move_symbol",
+        "args": {"file": "math.ts", "symbol": "addNumbers", "apply": false},
+        "assert": [{"path": "creates", "op": "nonempty"}]
+      },
+      {
+        "name": "extract_function preview (bug conhecido: vtsls Broken pipe)",
+        "tool": "extract_function",
+        "args": {"file": "math.ts", "start_line": 3, "end_line": 3, "apply": false},
+        "assert": [{"path": "safe", "op": "present"}],
+        "xfail": true
+      }
+    ]
+  },
+  {
+    "lang": "rust",
+    "project": "fixtures/rust",
+    "cases": [
+      {
+        "name": "find_references de struct",
+        "tool": "find_references",
+        "args": {"file": "src/lib.rs", "symbol": "Widget"},
+        "assert": [{"path": "count", "op": ">", "value": 0}]
+      },
+      {
+        "name": "find_symbol de método (impl)",
+        "tool": "find_symbol",
+        "args": {"file": "src/lib.rs", "name_path": "render"},
+        "assert": [{"path": "count", "op": ">=", "value": 1}]
+      },
+      {
+        "name": "rename_symbol preview seguro",
+        "tool": "rename_symbol",
+        "args": {"file": "src/lib.rs", "symbol": "make_widget", "new_name": "build_widget", "apply": false},
+        "assert": [{"path": "safe", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "dart",
+    "project": "fixtures/dart",
+    "setup": [["dart", "pub", "get"]],
+    "cases": [
+      {
+        "name": "workspace_symbols lang=dart NÃO retorna vazio silencioso (bug do relatório)",
+        "tool": "workspace_symbols",
+        "args": {"query": "Flag", "lang": "dart"},
+        "assert": [{"path": "count", "op": ">", "value": 0}]
+      },
+      {
+        "name": "find_references de classe anotada (@Deprecated) sem line",
+        "tool": "find_references",
+        "args": {"file": "lib/flag.dart", "symbol": "Flag"},
+        "assert": [{"path": "count", "op": ">", "value": 0}]
+      },
+      {
+        "name": "doctor smoke=true end-to-end",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "csharp",
+    "project": "fixtures/csharp",
+    "setup": [["dotnet", "restore", "--nologo", "-v", "q"]],
+    "cases": [
+      {
+        "name": "find_symbol de MÉTODO em C# (bug: assinatura no nome → count 0)",
+        "tool": "find_symbol",
+        "args": {"file": "Handler.cs", "name_path": "Handler/DoWork"},
+        "assert": [{"path": "count", "op": "==", "value": 1}]
+      },
+      {
+        "name": "find_references de classe",
+        "tool": "find_references",
+        "args": {"file": "Handler.cs", "symbol": "Handler"},
+        "assert": [{"path": "count", "op": ">", "value": 0}]
+      },
+      {
+        "name": "move_symbol reporta move_no_op honesto (csharp-ls não move p/ novo arquivo)",
+        "tool": "move_symbol",
+        "args": {"file": "Handler.cs", "symbol": "RefundOutcome", "apply": false},
+        "assert": [{"path": "error", "op": "==", "value": "move_no_op"}]
+      }
+    ]
+  }
+]

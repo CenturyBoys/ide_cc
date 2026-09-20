@@ -1,0 +1,62 @@
+[
+  {
+    "lang": "python",
+    "project": "OVERRIDDEN_BY_CODE_INTEL_E2E_REPO",
+    "cases": [
+      {
+        "name": "doctor smoke=true em repo REAL (escala/warmup): find_references real estável",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "typescript",
+    "project": "OVERRIDDEN_BY_CODE_INTEL_E2E_REPO",
+    "cases": [
+      {
+        "name": "doctor smoke=true em repo REAL (escala/warmup)",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "dart",
+    "project": "OVERRIDDEN_BY_CODE_INTEL_E2E_REPO",
+    "cases": [
+      {
+        "name": "doctor smoke=true em repo REAL (escala/warmup)",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "rust",
+    "project": "OVERRIDDEN_BY_CODE_INTEL_E2E_REPO",
+    "cases": [
+      {
+        "name": "doctor smoke=true em repo REAL (escala/warmup)",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  },
+  {
+    "lang": "csharp",
+    "project": "OVERRIDDEN_BY_CODE_INTEL_E2E_REPO",
+    "cases": [
+      {
+        "name": "doctor smoke=true em repo REAL (escala/warmup)",
+        "tool": "doctor",
+        "args": {"smoke": true},
+        "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      }
+    ]
+  }
+]
