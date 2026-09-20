@@ -6,6 +6,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- **`rename`/`find_references`/`call_hierarchy` atingiam o símbolo ERRADO por match de substring**
+  (Bug 2 do relatório rename, C#): `locate` usava `row.find(symbol)`, então `"Result"` casava DENTRO
+  de `"RefundResult"` e a operação mirava o tipo em vez do parâmetro — com `safe:true` silencioso.
+  Agora casa **identificador completo** (word boundary) via `find_ident`. Coberto por teste unitário
+  **e** por um caso e2e que asserta o ALVO da resolução (não só o flag de segurança) — a lacuna de
+  teste que deixou isso passar.
+
 ### Added
 - **Job CI `e2e-oss` (nightly + manual)**: roda o `--real` contra projetos OSS grandes e reais, um
   por linguagem (flask/Python, zod/TS, ripgrep/Rust, http/Dart) — reprodutível (os repos de campo

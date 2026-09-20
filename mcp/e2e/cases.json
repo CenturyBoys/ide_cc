@@ -117,6 +117,12 @@
         "tool": "rename_symbol",
         "args": {"file": "widget.ts", "symbol": "Widget", "new_name": "Widget", "apply": false},
         "assert": [{"path": "mode", "op": "==", "value": "noop"}]
+      },
+      {
+        "name": "ADVERSARIAL Bug2: 'Result' (substring de RefundResult) resolve o ALVO CERTO (a propriedade, poucas refs)",
+        "tool": "find_references",
+        "args": {"file": "substring.ts", "symbol": "Result", "line": 6},
+        "assert": [{"path": "count", "op": ">", "value": 0}, {"path": "count", "op": "<", "value": 3}]
       }
     ]
   },
