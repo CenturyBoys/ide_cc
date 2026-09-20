@@ -13,6 +13,12 @@ class ResponseModel:
     def make(cls, code: int) -> "ResponseModel":
         return cls(code=code)
 
+    # segundo método: renomear `make` -> `build` COLIDE (adversarial P8). Serve à detecção de
+    # colisão de escopo independente de diagnósticos (com typeCheckingMode=off, net_delta é inerte).
+    @classmethod
+    def build(cls, code: int) -> "ResponseModel":
+        return cls(code=code)
+
 
 # classe SEM decorator (controle): sempre resolveu, mesmo antes da correção.
 class ResponseCode:
