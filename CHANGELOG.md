@@ -7,6 +7,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Added
+- **`doctor smoke=true`** (P2): teste END-TO-END por linguagem — descobre um símbolo referenciável,
+  roda um `find_references` real e exige `count>0 && stable`; senão reporta `index_not_ready`/
+  `resolved_zero` acionável. Pega o que os checks estáticos (binário+config) não veem (posição,
+  warmup, escala). Sem `smoke`, o `hint` do doctor deixa claro que foi só checagem estática.
+- **`find_references summary=true`** (P7): saída resumida `{count, files, by_file}` sem cada
+  `path:linha:col` — evita estourar o limite de tokens do cliente em símbolos muito usados.
+- **`CODE_INTEL_WS_TIMEOUT_MS`** (P5): timeout por request do `workspace_symbols` (default 10s). No
+  cold index ele agora **reintenta** dentro do budget (`CODE_INTEL_WARMUP_MS`) e devolve
+  `index_not_ready` acionável em vez de timeout SECO.
 - **`CODE_INTEL_WARMUP_MS`** (P3): teto de warmup do `find_references`/rename configurável (default
   60000ms) para repos grandes em cold start. O aviso `index_not_ready` agora é **acionável** — sugere
   ligar `CODE_INTEL_DAEMON=1` (sem daemon o warmup reinicia a cada chamada) e/ou esticar o teto.
