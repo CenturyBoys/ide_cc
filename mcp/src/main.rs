@@ -301,15 +301,21 @@ fn strip_sigs(path: &str) -> String {
 }
 
 // Casa um name_path achatado `fp` (possivelmente com assinatura de método, ex.: csharp-ls)
-// contra a `query` do usuário (sem assinatura). Normaliza `fp` antes de comparar (então métodos
-// C# resolvem). Critérios: igualdade exata, sufixo "/query" ou — SÓ quando a query não qualifica
-// a classe (sem '/') — último segmento igual. Assim uma query composta "A/foo" não casa "B/foo".
+// contra a `query` do usuário (sem assinatura). Normaliza `fp` antes de comparar (métodos C#
+// resolvem). Critérios:
+//  - igualdade exata ou sufixo "/query" (fp hierárquico ou com containerName);
+//  - último segmento igual, permitido quando a query NÃO qualifica a classe (sem '/') OU quando o
+//    `fp` é ACHATADO (sem '/': o server não deu info de classe — ex.: csharp-ls sem containerName).
+//    Assim "A/foo" NÃO casa "B/foo" quando há hierarquia, mas casa um "foo" achatado (best-effort).
 fn name_path_matches(fp: &str, query: &str) -> bool {
     let nfp = strip_sigs(fp);
     if nfp == query || nfp.ends_with(&format!("/{query}")) {
         return true;
     }
-    !query.contains('/') && nfp.rsplit('/').next() == Some(base_name(query))
+    let q_last = base_name(query.rsplit('/').next().unwrap_or(query));
+    let last_matches = nfp.rsplit('/').next() == Some(q_last);
+    let fp_flat = !nfp.contains('/');
+    last_matches && (!query.contains('/') || fp_flat)
 }
 
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
@@ -2010,6 +2016,17 @@ mod tests {
         assert!(!is_conn_dead(
             "timeout (10000ms) em textDocument/codeAction"
         ));
+    }
+
+    // Relatório e2e: servers ACHATADOS sem containerName (csharp-ls) → fp sem classe. A query
+    // composta deve casar por último segmento (best-effort), mas hierarquia mantém precisão.
+    #[test]
+    fn name_path_matches_flat_server_composite_query() {
+        assert!(name_path_matches("DoWork(int x)", "Handler/DoWork"));
+        assert!(name_path_matches("DoWork", "Handler/DoWork"));
+        // com hierarquia (containerName), a classe importa:
+        assert!(!name_path_matches("Gadget/render", "Widget/render"));
+        assert!(name_path_matches("Widget/render", "Widget/render"));
     }
 
     // Regressão do relatório Dart: workspace_symbols roteava lang!=python p/ tsgo em silêncio.

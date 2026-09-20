@@ -19,7 +19,9 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `containerName`), não a árvore hierárquica; o `flatten_symbols` só olhava `children`, então
   métodos vinham como `metodo` (sem a classe) e `find_symbol("Classe/metodo")` dava `count:0` (e
   regrediu com o tightening de precisão). Agora o flatten reconstrói `Classe/metodo` via
-  `containerName` — precisão entre classes homônimas nos DOIS formatos.
+  `containerName` — precisão entre classes homônimas nos DOIS formatos. E quando o server é
+  achatado E **sem** `containerName` (csharp-ls), a query composta `Classe/metodo` casa por último
+  segmento (best-effort, sem info de classe) — mantendo precisão onde há hierarquia.
 - **`workspace_symbols` — "silent empty" no cold index** (pego pela suíte e2e, Dart): o servidor
   devolvia `[]` VÁLIDO enquanto indexava e o retry (P5) só re-tentava em erro. Agora reintenta também
   em VAZIO até o budget; se seguir vazio, sinaliza `warning` (pode não estar pronto) em vez de afirmar
