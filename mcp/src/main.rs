@@ -1308,7 +1308,10 @@ fn build_server() -> Server {
 // cold-start (rust-analyzer ~30s, csharp-ls ~24s) de novo. Solução: um DAEMON separado, dono dos
 // LSPs, que sobrevive ao restart do MCP. O MCP vira um proxy fino sobre um Unix socket.
 // (Seguro porque o freshness re-sincroniza arquivos mudados no disco entre sessões.)
+// NB: usa Unix domain sockets -> disponível só em unix. No Windows o MCP roda sem o daemon
+// (cache entre sessões indisponível); todo o resto funciona normalmente.
 
+#[cfg(unix)]
 fn sock_path() -> String {
     std::env::var("CODE_INTEL_SOCK").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_else(|_| "tmp".into());
@@ -1316,6 +1319,7 @@ fn sock_path() -> String {
     })
 }
 
+#[cfg(unix)]
 fn run_daemon() {
     let srv = Arc::new(build_server());
     let path = sock_path();
@@ -1347,6 +1351,7 @@ fn run_daemon() {
     }
 }
 
+#[cfg(unix)]
 fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
     let reader = std::io::BufReader::new(match stream.try_clone() {
         Ok(s) => s,
@@ -1374,6 +1379,7 @@ fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
 }
 
 // no MCP: encaminha um tools/call ao daemon (sobe o daemon se necessário)
+#[cfg(unix)]
 fn forward_call(name: &str, args: &Value) -> Value {
     let path = sock_path();
     if std::os::unix::net::UnixStream::connect(&path).is_err() {
@@ -1421,11 +1427,26 @@ fn main() {
         return;
     }
     if argv.iter().any(|a| a == "--daemon") {
-        run_daemon();
+        #[cfg(unix)]
+        {
+            run_daemon();
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!("code-intel-mcp: --daemon (cache entre sessões) não é suportado no Windows");
+        }
         return;
     }
     // opt-in: encaminha as operações ao daemon (índice quente sobrevive entre sessões)
+    #[cfg(unix)]
     let use_daemon = std::env::var("CODE_INTEL_DAEMON").is_ok();
+    #[cfg(not(unix))]
+    let use_daemon = {
+        if std::env::var("CODE_INTEL_DAEMON").is_ok() {
+            eprintln!("code-intel-mcp: CODE_INTEL_DAEMON ignorado no Windows (cache entre sessões indisponível)");
+        }
+        false
+    };
     let srv = build_server();
 
     let stdin = std::io::stdin();
@@ -1466,11 +1487,18 @@ fn main() {
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or("");
                 let args = msg["params"]["arguments"].clone();
-                Some(if use_daemon {
+                #[cfg(unix)]
+                let r = if use_daemon {
                     forward_call(name, &args)
                 } else {
                     call_tool(&srv, name, &args)
-                })
+                };
+                #[cfg(not(unix))]
+                let r = {
+                    let _ = use_daemon;
+                    call_tool(&srv, name, &args)
+                };
+                Some(r)
             }
             "ping" => Some(json!({})),
             _ => None,

@@ -6,6 +6,21 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-20
+
+### Added
+- **Suporte a Windows** (x86_64): release passa a publicar `code-intel-mcp-x86_64-pc-windows-msvc.zip`
+  (workflow com runner `windows-latest`); novo instalador PowerShell [`install.ps1`]. O core do MCP
+  e todas as ferramentas semânticas funcionam; o daemon de cache entre sessões (`CODE_INTEL_DAEMON`)
+  fica atrás de `#[cfg(unix)]` — indisponível no Windows nativo (avisa via stderr), disponível via WSL.
+
+### Changed
+- README agora é **English-first** (mercado internacional), com o pitch "you use an IDE, why don't
+  your agents?" e ângulo de posicionamento em **segurança/garantia** (apply→verify→auto-rollback).
+  Adicionada tabela de comparação honesta vs. Serena / agent-lsp / bridges LSP→MCP genéricos
+  (pesquisa competitiva). README em português preservado em [`README.pt-BR.md`](README.pt-BR.md),
+  com seletor de idioma em ambos.
+
 ## [0.5.0] - 2026-09-19
 
 ### Added
@@ -82,7 +97,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.3.0...v0.4.0
