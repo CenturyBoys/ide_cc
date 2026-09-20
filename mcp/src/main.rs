@@ -203,6 +203,30 @@ fn flatten_symbols(symbols: &[Value], prefix: &str, out: &mut Vec<(String, u64, 
     }
 }
 
+// Alguns language servers (notadamente csharp-ls) anexam a assinatura ao nome do método no
+// documentSymbol (ex.: "HandleAsync(string x, int y)"). Para casar por name_path, comparamos o
+// nome "base" (antes do '('). Idempotente para nomes sem assinatura (TS/Rust/etc.).
+fn base_name(seg: &str) -> &str {
+    match seg.find('(') {
+        Some(i) => seg[..i].trim_end(),
+        None => seg,
+    }
+}
+
+// Normaliza um name_path inteiro removendo a assinatura de cada segmento.
+fn strip_sigs(path: &str) -> String {
+    path.split('/').map(base_name).collect::<Vec<_>>().join("/")
+}
+
+// Casa um name_path achatado `fp` (possivelmente com assinatura de método, ex.: csharp-ls)
+// contra a `query` do usuário (sem assinatura): igualdade exata, sufixo "/query", ou último
+// segmento igual. Normaliza `fp` antes de comparar, então métodos C# passam a resolver.
+fn name_path_matches(fp: &str, query: &str) -> bool {
+    let nfp = strip_sigs(fp);
+    let last = base_name(query.rsplit('/').next().unwrap_or(query));
+    nfp == query || nfp.ends_with(&format!("/{query}")) || nfp.rsplit('/').next() == Some(last)
+}
+
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
     client.ensure_open(abs)?;
     let res = client.request(
@@ -225,20 +249,24 @@ fn resolve_pos(
         if let Ok(syms) = document_symbols(client, abs) {
             let mut flat = vec![];
             flatten_symbols(&syms, "", &mut flat);
-            let last = name_path.rsplit('/').next().unwrap_or(name_path);
+            let last = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
             let suffix = format!("/{name_path}");
+            // Casa contra o name_path normalizado (sem assinatura), cobrindo métodos do csharp-ls.
             let hit = flat
                 .iter()
-                .find(|(fp, ..)| fp == name_path)
-                .or_else(|| flat.iter().find(|(fp, ..)| fp.ends_with(&suffix)))
+                .find(|(fp, ..)| strip_sigs(fp) == name_path)
                 .or_else(|| {
                     flat.iter()
-                        .find(|(fp, ..)| fp.rsplit('/').next() == Some(last))
+                        .find(|(fp, ..)| strip_sigs(fp).ends_with(&suffix))
+                })
+                .or_else(|| {
+                    flat.iter()
+                        .find(|(fp, ..)| strip_sigs(fp).rsplit('/').next() == Some(last))
                 });
             if let Some((_, _, l, c)) = hit {
                 // O documentSymbol às vezes aponta pro início da declaração (ex.: 'export'),
                 // não pro identificador. Refina a coluna localizando o nome NA linha resolvida.
-                let last = name_path.rsplit('/').next().unwrap_or(name_path);
+                let last = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
                 if let Ok((rl, rc)) = locate(abs, last, Some(l + 1)) {
                     return Ok((rl, rc));
                 }
@@ -877,11 +905,9 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
-    let last = name_path.rsplit('/').next().unwrap_or(name_path);
-    let suffix = format!("/{name_path}");
     let matches: Vec<Value> = flat
         .iter()
-        .filter(|(fp, ..)| fp == name_path || fp.ends_with(&suffix) || fp.rsplit('/').next() == Some(last))
+        .filter(|(fp, ..)| name_path_matches(fp, name_path))
         .map(|(fp, k, l, c)| json!({"name_path": fp, "kind": kind_name(*k), "at": format!("{}:{}", l + 1, c + 1)}))
         .collect();
     Ok(json!({"query": name_path, "count": matches.len(), "matches": matches}))
@@ -1515,5 +1541,64 @@ fn main() {
         };
         let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap());
         let _ = out.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_name_strips_method_signature() {
+        // csharp-ls anexa a assinatura ao nome do método
+        assert_eq!(base_name("HandleAsync(string x, int y)"), "HandleAsync");
+        assert_eq!(
+            base_name("AddWalletModule(this IServiceCollection services)"),
+            "AddWalletModule"
+        );
+        // idempotente para nomes sem assinatura (TS/Rust/etc.)
+        assert_eq!(base_name("Reasons"), "Reasons");
+        assert_eq!(
+            base_name("RefundRedemptionHandler"),
+            "RefundRedemptionHandler"
+        );
+    }
+
+    #[test]
+    fn strip_sigs_normalizes_full_path() {
+        assert_eq!(
+            strip_sigs("RefundRedemptionHandler/HandleAsync(string x, Guid y)"),
+            "RefundRedemptionHandler/HandleAsync"
+        );
+        assert_eq!(strip_sigs("Widget/render"), "Widget/render");
+    }
+
+    // Regressão do bug: find_symbol devolvia count 0 para métodos em C# porque o csharp-ls
+    // inclui a assinatura no nome do símbolo (ex.: "HandleAsync(...)").
+    #[test]
+    fn name_path_matches_csharp_method_with_signature() {
+        let fp = "RefundRedemptionHandler/HandleAsync(string publicRef, Guid partnerId)";
+        assert!(name_path_matches(fp, "HandleAsync"));
+        assert!(name_path_matches(fp, "RefundRedemptionHandler/HandleAsync"));
+
+        let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
+        assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    #[test]
+    fn name_path_matches_class_and_field_unaffected() {
+        assert!(name_path_matches(
+            "RefundRedemptionHandler",
+            "RefundRedemptionHandler"
+        ));
+        assert!(name_path_matches(
+            "RefundRedemptionHandler/Reasons",
+            "Reasons"
+        ));
+        // não casa símbolo diferente
+        assert!(!name_path_matches(
+            "RefundRedemptionHandler/HandleAsync(string x)",
+            "ExecuteRefundAsync"
+        ));
     }
 }

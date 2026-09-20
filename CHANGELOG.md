@@ -6,6 +6,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- **`find_symbol` não resolvia métodos em C#** (`count: 0` para `kind: Method`, embora `Class`/`Field`
+  funcionassem). Causa: o `csharp-ls` anexa a assinatura ao nome do método no `documentSymbol`
+  (ex.: `HandleAsync(string x, Guid y)`), e o casamento por `name_path` comparava contra o nome cru.
+  Agora o nome é normalizado (descarta a assinatura antes do `(`) tanto no `find_symbol` quanto no
+  `resolve_pos` — então rename/find_references/call_hierarchy também resolvem métodos C# sem `line`
+  explícito. Idempotente para TS/Rust/etc. Coberto por testes unitários.
+
 ### Changed
 - **CI**: bump das GitHub Actions para runtime Node 24 — `actions/checkout@v4→v5` (ci + release) e
   `softprops/action-gh-release@v2→v3`, resolvendo o aviso de deprecação do Node 20.
