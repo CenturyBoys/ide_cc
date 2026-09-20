@@ -199,5 +199,17 @@
         "assert": [{"path": "build_ok", "op": "==", "value": true}]
       }
     ]
+  },
+  {
+    "lang": "python",
+    "project": "fixtures/python-basic",
+    "cases": [
+      {
+        "name": "MATRIZ CONFIG: rename com colisão é barrado TAMBÉM com typeCheckingMode=basic",
+        "tool": "rename_symbol",
+        "args": {"file": "models.py", "symbol": "ResponseModel/make", "new_name": "build", "apply": false},
+        "assert": [{"path": "error", "op": "==", "value": "name_collision"}, {"path": "safe", "op": "==", "value": false}]
+      }
+    ]
   }
 ]

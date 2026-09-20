@@ -1,0 +1,10 @@
+[project]
+name = "e2e-fixture-python-basic"
+version = "0.0.0"
+
+# Par do fixture `python` (que usa typeCheckingMode=off). Aqui usamos "basic": a MATRIZ de config
+# prova que a detecção de colisão do rename (P8) pega o rename destrutivo nas DUAS configs — ou
+# seja, a rede de segurança NÃO depende do modo de type-check / dos diagnósticos.
+[tool.basedpyright]
+include = ["."]
+typeCheckingMode = "basic"
