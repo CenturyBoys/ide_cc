@@ -6,6 +6,34 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-20
+
+### Added
+- **Camada ADVERSARIAL de testes e2e + `docs/TEST-STRATEGY.md`**: além dos casos positivos, agora há
+  casos que exigem o **bloqueio** de operações destrutivas (rename com colisão, para keyword, noop,
+  extract/move não suportado, move_no_op, build verde). Inclui o fixture Python com
+  `typeCheckingMode=off` (a config que quebrou o P8) provando que a rede pega a colisão **sem depender
+  de diagnósticos**. Princípio: *testar a garantia (recusa quebrar), não só a feature*.
+
+### Fixed
+- **P8 — `rename_symbol` reportava `safe:true` num rename que QUEBRA (colisão de nome)** (issue #3,
+  Python): com `typeCheckingMode=off` o basedpyright não emite diagnósticos → `net_delta` sempre 0 →
+  tudo "safe". Agora há **detecção explícita de colisão de escopo** (independente de diagnósticos):
+  se `new_name` já existe como irmão no mesmo container, o rename é barrado (`name_collision`).
+- **P12 — `rename_symbol` não validava `new_name`**: nome inválido/keyword agora é **rejeitado**
+  (`invalid_new_name`) em vez de virar noop silencioso; `new==old` é **noop** explícito.
+- **P9 — `validate_build`/`verify_build` no-op em Python**: agora há default (`basedpyright`); env key
+  corrigido para `PYTHON_CHECK_CMD` (batia com a mensagem de erro).
+- **P11 — extract/move em Python**: erro **explícito** "indisponível para <lang>" em vez do
+  enigmático "nenhum refactoring disponível".
+- **P10 — `workspace_symbols` com lang sem fontes**: retorna **rápido** com aviso (antes esperava
+  60s e dava `index_not_ready` enganoso).
+- **`validate_build` C# falso-negativo** (relatório suite-completa): `build_ok:false` num build VERDE
+  porque o parser casava a linha de resumo `"0 Error(s)"`. Agora ignora `N Error(s)` e só conta erros
+  reais (`error CS...`/`error[E...]`) — evita reverter um apply seguro via `verify_build`.
+- **`document_symbols` rotulava `record` (não-struct) como `Class`**: heurístico relabela p/ `Record`
+  (cosmético; `record struct` já vinha `Struct`).
+
 ## [0.7.1] - 2026-09-20
 
 ### Added
@@ -196,7 +224,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0

@@ -242,6 +242,23 @@ fn kind_name(k: u64) -> &'static str {
     }
 }
 
+// Relatório suite-completa: csharp-ls rotula `record` (tipo referência) como kind Class (o LSP não
+// tem kind "Record"; `record struct` já vem como Struct). Heurístico barato: se é Class e a linha
+// do identificador tem o token `record`, rotula "Record". As linhas já estão carregadas p/ refine_at.
+fn kind_label(k: u64, lines: &[&str], line0: u64) -> &'static str {
+    if k == 5 {
+        if let Some(src) = lines.get(line0 as usize) {
+            if src
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w == "record")
+            {
+                return "Record";
+            }
+        }
+    }
+    kind_name(k)
+}
+
 fn sym_pos(s: &Value) -> (u64, u64) {
     let r = if s.get("selectionRange").is_some() {
         &s["selectionRange"]
@@ -316,6 +333,141 @@ fn name_path_matches(fp: &str, query: &str) -> bool {
     let last_matches = nfp.rsplit('/').next() == Some(q_last);
     let fp_flat = !nfp.contains('/');
     last_matches && (!query.contains('/') || fp_flat)
+}
+
+// P12: `new_name` precisa ser um identificador válido e não uma keyword (senão o rename ou vira
+// noop silencioso, ou gera código que não compila). Denylist ampla (cobre TS/Python/Rust/C#/Dart).
+fn is_reserved_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "abstract"
+            | "async"
+            | "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "def"
+            | "default"
+            | "del"
+            | "do"
+            | "elif"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "final"
+            | "finally"
+            | "fn"
+            | "for"
+            | "from"
+            | "function"
+            | "if"
+            | "impl"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "interface"
+            | "is"
+            | "lambda"
+            | "let"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "new"
+            | "none"
+            | "not"
+            | "null"
+            | "or"
+            | "pass"
+            | "priv"
+            | "pub"
+            | "raise"
+            | "return"
+            | "self"
+            | "static"
+            | "struct"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "trait"
+            | "true"
+            | "try"
+            | "type"
+            | "typeof"
+            | "use"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
+fn validate_new_name(new_name: &str) -> Result<(), String> {
+    if new_name.is_empty() {
+        return Err("new_name vazio".into());
+    }
+    let mut chars = new_name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_alphabetic() || first == '_') {
+        return Err(format!(
+            "'{new_name}' não é um identificador válido (começa com caractere inválido)"
+        ));
+    }
+    if !new_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(format!(
+            "'{new_name}' não é um identificador válido (caracteres não permitidos)"
+        ));
+    }
+    if is_reserved_keyword(new_name) {
+        return Err(format!("'{new_name}' é uma palavra reservada"));
+    }
+    Ok(())
+}
+
+// P8: colisão de nome no MESMO escopo. Independe de diagnósticos (net_delta fica inerte quando o
+// server não emite diagnósticos — ex.: basedpyright com typeCheckingMode=off). Acha o símbolo alvo
+// (por nome, mais próximo da linha resolvida), pega seu container e vê se já há um IRMÃO com o
+// novo nome. Retorna o name_path do irmão colidente, se houver. Cobre same-file/same-scope.
+fn same_scope_collision(
+    flat: &[(String, u64, u64, u64)],
+    target_line: u64,
+    old_name: &str,
+    new_name: &str,
+) -> Option<String> {
+    let last_seg =
+        |fp: &str| -> String { base_name(fp.rsplit('/').next().unwrap_or(fp)).to_string() };
+    let container = |fp: &str| -> String {
+        match fp.rsplit_once('/') {
+            Some((c, _)) => c.to_string(),
+            None => String::new(),
+        }
+    };
+    let ti = flat
+        .iter()
+        .enumerate()
+        .filter(|(_, (fp, ..))| last_seg(fp) == old_name)
+        .min_by_key(|(_, (_, _, l, _))| (*l as i64 - target_line as i64).abs())
+        .map(|(i, _)| i)?;
+    let tcont = container(&flat[ti].0);
+    for (i, (fp, k, _, _)) in flat.iter().enumerate() {
+        if i == ti {
+            continue;
+        }
+        // só membros "declaráveis" (evita falso-positivo com locais): Class/Method/Property/Field/
+        // Constructor/Enum/Interface/Function/Constant/Struct
+        let is_member = matches!(k, 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 14 | 23);
+        if is_member && container(fp) == tcont && last_seg(fp) == new_name {
+            return Some(fp.clone());
+        }
+    }
+    None
 }
 
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
@@ -548,7 +700,9 @@ fn build_cmd(lang: &str) -> Option<(String, Vec<String>)> {
             Some(("dotnet", vec!["build", "--nologo", "-v", "q"])),
         ),
         "typescript" => ("TS_CHECK_CMD", None),
-        "python" => ("PY_CHECK_CMD", None),
+        // P9: default sensato pra Python (antes: no-op silencioso). basedpyright lê o disco e o
+        // pyrightconfig; override via PYTHON_CHECK_CMD (ex.: "python -m py_compile ...").
+        "python" => ("PYTHON_CHECK_CMD", Some(("basedpyright", vec!["."]))),
         _ => ("", None),
     };
     if let Ok(s) = std::env::var(env_key) {
@@ -563,6 +717,22 @@ fn build_cmd(lang: &str) -> Option<(String, Vec<String>)> {
             a.into_iter().map(|x| x.to_string()).collect(),
         )
     })
+}
+
+// Extrai linhas de ERRO REAL da saída do build, ignorando a linha de RESUMO "N Error(s)" que o
+// dotnet/msbuild imprime SEMPRE (inclusive "0 Error(s)" num build verde). Erros reais dizem
+// "error CS1234"/"error:"/"error[E...]", nunca "error(s)". Sem esse filtro, um build verde virava
+// build_ok:false (falso-negativo que poderia reverter um apply seguro via verify_build).
+fn parse_build_errors(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter(|l| {
+            let low = l.to_lowercase();
+            low.contains("error") && !low.contains("error(s)")
+        })
+        .take(20)
+        .map(|l| l.trim().to_string())
+        .collect()
 }
 
 // roda o checker no diretório do projeto; retorna (ok, amostra de linhas de erro)
@@ -583,12 +753,7 @@ fn build_check(project: &str, lang: &str) -> Result<(bool, Vec<String>), String>
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let errors: Vec<String> = combined
-        .lines()
-        .filter(|l| l.to_lowercase().contains("error"))
-        .take(20)
-        .map(|l| l.trim().to_string())
-        .collect();
+    let errors = parse_build_errors(&combined);
     Ok((out.status.success() && errors.is_empty(), errors))
 }
 
@@ -836,11 +1001,44 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let new_name = a["new_name"].as_str().ok_or("faltou 'new_name'")?;
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
+
+    // P12: valida new_name (identificador válido, não-keyword) ANTES de qualquer trabalho.
+    if let Err(reason) = validate_new_name(new_name) {
+        return Ok(json!({
+            "operation": "rename_symbol", "applied": false, "safe": false,
+            "error": "invalid_new_name", "detail": reason,
+            "symbol": symbol, "new_name": new_name
+        }));
+    }
+    // P12: renomear para o MESMO nome é noop explícito (não um "rename real" com blast_radius).
+    let old_last = base_name(symbol.rsplit('/').next().unwrap_or(symbol));
+    if new_name == old_last {
+        return Ok(json!({
+            "operation": "rename_symbol", "applied": false, "mode": "noop", "safe": true,
+            "detail": "new_name == nome atual — nada a fazer", "symbol": symbol, "new_name": new_name
+        }));
+    }
+
     let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
+
+    // P8: colisão de nome no mesmo escopo — rede INDEPENDENTE de diagnósticos (net_delta fica
+    // inerte com typeCheckingMode=off). Se o novo nome já existe como irmão, o rename quebra.
+    if let Ok(syms) = document_symbols(&client, &abs) {
+        let mut flat = vec![];
+        flatten_symbols(&syms, "", &mut flat);
+        if let Some(colide) = same_scope_collision(&flat, l, old_last, new_name) {
+            return Ok(json!({
+                "operation": "rename_symbol", "applied": false, "safe": false,
+                "error": "name_collision",
+                "detail": format!("'{new_name}' já existe no mesmo escopo ('{colide}') — o rename criaria colisão/shadow e quebraria o código (rede independente de diagnósticos)"),
+                "symbol": symbol, "new_name": new_name
+            }));
+        }
+    }
 
     // GATE de warmup: índice quente ANTES de renomear (senão o WorkspaceEdit é incompleto).
     let (_refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c)?;
@@ -880,6 +1078,20 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     result["new_name"] = json!(new_name);
     result["index_warmup_ms"] = json!(warmup_ms);
     Ok(result)
+}
+
+// P11: quando o backend não oferece o refactoring, deixa claro que pode ser NÃO SUPORTADO na
+// linguagem (em vez do enigmático "nenhum refactoring disponível nesta posição").
+fn refactor_err(op: &str, lang: &str, e: String) -> String {
+    if e.contains("nenhum refactoring") {
+        format!(
+            "{op} indisponível para '{lang}' nesta seleção — os refactorings extract/move dependem do \
+             suporte do language server (garantido em TypeScript/vtsls; extract também em C#). Se \
+             '{lang}' não suporta, isto é esperado. Detalhe: {e}"
+        )
+    } else {
+        e
+    }
 }
 
 // pega o edit de um refactoring (codeAction -> resolve se lazy). Faz warmup até aparecerem ações.
@@ -969,7 +1181,7 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
                 format!("backend '{backend}' fechou a conexão durante extract.function e falhou após reinício (provável crash do backend): {e2}")
             })?
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(refactor_err("extract_function", build_lang(file), e)),
     };
     let mut result = verify_and_apply(
         &client,
@@ -1006,7 +1218,7 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
                 format!("backend '{backend}' fechou a conexão durante move e falhou após reinício: {e2}")
             })?
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(refactor_err("move_symbol", build_lang(file), e)),
     };
     // Achado 2 (relatório): "mover para novo arquivo" que NÃO cria arquivo é no-op — alguns backends
     // (ex.: csharp-ls) devolvem uma ação refactor.move trivial. Reporta honestamente em vez de safe:true.
@@ -1045,7 +1257,7 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         .into_iter()
         .map(|(fp, k, l, c)| {
             let (rl, rc) = refine_at(&flines, &fp, l, c);
-            json!({"name_path": fp, "kind": kind_name(k), "at": format!("{}:{}", rl + 1, rc + 1)})
+            json!({"name_path": fp, "kind": kind_label(k, &flines, rl), "at": format!("{}:{}", rl + 1, rc + 1)})
         })
         .collect();
     Ok(json!({"file": file, "count": list.len(), "symbols": list}))
@@ -1096,6 +1308,22 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let query = a["query"].as_str().ok_or("faltou 'query'")?;
     // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts).
     let backend = ws_backend(a["lang"].as_str())?;
+    // P10: se o projeto não tem fontes da linguagem pedida, retorna RÁPIDO — em vez de subir o LSP
+    // e esperar os 60s de warmup pra devolver vazio com msg enganosa de "index_not_ready".
+    let exts: &[&str] = match backend {
+        "tsgo" => &["ts", "tsx", "js", "jsx", "mts", "cts"],
+        "basedpyright" => &["py", "pyi"],
+        "dart" => &["dart"],
+        "rust-analyzer" => &["rs"],
+        "csharp-ls" => &["cs"],
+        _ => &[],
+    };
+    if !exts.is_empty() && !exts.iter().any(|e| find_source_file(project, e).is_some()) {
+        return Ok(json!({
+            "query": query, "count": 0, "symbols": [],
+            "warning": format!("nenhum arquivo-fonte da linguagem no projeto (ext: {}) — verifique o 'lang'", exts.join("/")),
+        }));
+    }
     let client = srv.client(project, backend)?;
     // P5: no cold index o workspace/symbol estourava timeout SECO. Agora reintenta dentro de um
     // budget (CODE_INTEL_WARMUP_MS, default 60s) e, se não vier, devolve index_not_ready ACIONÁVEL
@@ -1544,7 +1772,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "rename_symbol",
-            "description": "Rename semântico com verificação. Gate de warmup + simula a edição EM MEMÓRIA e mede net_delta (erros introduzidos - resolvidos). Com apply=false (default) é preview (mede e reverte). Com apply=true persiste no disco APENAS se net_delta<=0; senão reverte e reporta os erros que introduziria. 'symbol' aceita name_path ('Classe/metodo').",
+            "description": "Rename semântico com verificação. Valida new_name (identificador válido, não-keyword) e trata new==old como noop. Detecta COLISÃO de nome no mesmo escopo (rede independente de diagnósticos — pega o caso em que o net_delta fica inerte, ex.: Python typeCheckingMode=off). Gate de warmup + simula a edição EM MEMÓRIA e mede net_delta. apply=false (default) = preview; apply=true persiste só se net_delta<=0. 'symbol' aceita name_path ('Classe/metodo').",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1652,7 +1880,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "validate_build",
-            "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Comando por linguagem, override via env <LANG>_CHECK_CMD.",
+            "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Defaults: rust=cargo check, dart=dart analyze, csharp=dotnet build, python=basedpyright. Override via env <LANG>_CHECK_CMD (ex.: PYTHON_CHECK_CMD).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2016,6 +2244,84 @@ mod tests {
         assert!(!is_conn_dead(
             "timeout (10000ms) em textDocument/codeAction"
         ));
+    }
+
+    // Relatório suite-completa: validate_build C# dava build_ok:false num build VERDE porque o
+    // filtro casava a linha de resumo "0 Error(s)". O parser deve ignorá-la e pegar erros reais.
+    #[test]
+    fn parse_build_errors_ignores_summary_line() {
+        let green = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\nTime Elapsed 00:00:08";
+        assert!(parse_build_errors(green).is_empty());
+        let broken = "Handler.cs(12,5): error CS1002: ; expected\n    1 Error(s)";
+        let e = parse_build_errors(broken);
+        assert_eq!(e.len(), 1);
+        assert!(e[0].contains("CS1002"));
+        // cargo/rust-style
+        let rustish = "error[E0308]: mismatched types\n  --> src/x.rs:3:5";
+        assert_eq!(parse_build_errors(rustish).len(), 1);
+    }
+
+    // Relatório suite-completa: record (não-struct) rotulado Class. kind_label relabela p/ Record.
+    #[test]
+    fn kind_label_relabels_record() {
+        let lines = vec![
+            "public sealed record ProtectedCpf(string Value)",
+            "public class Handler",
+            "public readonly record struct Tn",
+        ];
+        assert_eq!(kind_label(5, &lines, 0), "Record"); // record de classe
+        assert_eq!(kind_label(5, &lines, 1), "Class"); // class comum
+        assert_eq!(kind_label(23, &lines, 2), "Struct"); // record struct já é kind Struct
+        assert_eq!(kind_label(6, &lines, 1), "Method"); // não-Class inalterado
+    }
+
+    // P9: Python passa a ter comando de build/check default (antes: no-op silencioso).
+    #[test]
+    fn build_cmd_python_has_default() {
+        assert!(build_cmd("python").is_some());
+        assert!(build_cmd("rust").is_some());
+        assert!(build_cmd("dart").is_some());
+        assert!(build_cmd("csharp").is_some());
+    }
+
+    // P12: validação de new_name.
+    #[test]
+    fn validate_new_name_rules() {
+        assert!(validate_new_name("Gadget").is_ok());
+        assert!(validate_new_name("_private2").is_ok());
+        assert!(validate_new_name("").is_err());
+        assert!(validate_new_name("2foo").is_err()); // começa com dígito
+        assert!(validate_new_name("has space").is_err());
+        assert!(validate_new_name("has-dash").is_err());
+        assert!(validate_new_name("class").is_err()); // keyword
+        assert!(validate_new_name("return").is_err());
+    }
+
+    // P8: colisão de nome no mesmo escopo (independe de diagnósticos).
+    #[test]
+    fn same_scope_collision_detects_sibling() {
+        // ResponseModel tem for_human (linha 21) e from_exception (linha 32), ambos métodos.
+        let flat = vec![
+            ("ResponseModel".to_string(), 5u64, 15, 7),
+            ("ResponseModel/for_human".to_string(), 6, 21, 9),
+            ("ResponseModel/from_exception".to_string(), 6, 32, 9),
+        ];
+        // renomear for_human -> from_exception COLIDE (irmão já existe)
+        assert_eq!(
+            same_scope_collision(&flat, 21, "for_human", "from_exception").as_deref(),
+            Some("ResponseModel/from_exception")
+        );
+        // renomear for_human -> for_display NÃO colide
+        assert_eq!(
+            same_scope_collision(&flat, 21, "for_human", "for_display"),
+            None
+        );
+        // colisão só no MESMO escopo: um método homônimo em OUTRA classe não conta
+        let flat2 = vec![
+            ("A/foo".to_string(), 6u64, 3, 5),
+            ("B/bar".to_string(), 6, 10, 5),
+        ];
+        assert_eq!(same_scope_collision(&flat2, 3, "foo", "bar"), None);
     }
 
     // Relatório e2e: servers ACHATADOS sem containerName (csharp-ls) → fp sem classe. A query
