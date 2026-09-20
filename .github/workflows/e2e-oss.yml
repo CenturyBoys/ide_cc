@@ -42,16 +42,24 @@ jobs:
         run: pip install --user basedpyright
       - uses: dart-lang/setup-dart@v1
         continue-on-error: true
+      - uses: actions/setup-dotnet@v4
+        continue-on-error: true
+        with:
+          dotnet-version: "8.0"
+      - name: install csharp-ls
+        continue-on-error: true
+        run: dotnet tool install --global csharp-ls
 
       - name: resolve LSP bins
         run: |
           {
-            echo "PATH=$HOME/.local/bin:$PATH"
+            echo "PATH=$HOME/.local/bin:$HOME/.dotnet/tools:$PATH"
             echo "RUST_ANALYZER_BIN=$(rustup which rust-analyzer || echo rust-analyzer)"
             echo "BASEDPYRIGHT_BIN=basedpyright-langserver"
             echo "TSGO_BIN=tsgo"
             echo "VTSLS_BIN=vtsls"
             echo "DART_BIN=dart"
+            echo "CSHARP_LS_BIN=csharp-ls"
             echo "CODE_INTEL_WARMUP_MS=240000"
             echo "CODE_INTEL_E2E_TIMEOUT=420"
           } >> "$GITHUB_ENV"
@@ -77,3 +85,13 @@ jobs:
           git clone --depth 1 https://github.com/dart-lang/http /tmp/oss-dart
           (cd /tmp/oss-dart/pkgs/http && dart pub get)
           CODE_INTEL_E2E_REPO=/tmp/oss-dart/pkgs/http CODE_INTEL_E2E_LANG=dart python3 mcp/e2e/run.py --real
+
+      - name: CSharp OSS (serilog/serilog)
+        run: |
+          git clone --depth 1 https://github.com/serilog/serilog /tmp/oss-cs
+          # aponta pro DIRETÓRIO do 1º .csproj (detect_langs vê o .csproj e o csharp-ls carrega o projeto,
+          # robusto ao layout do repo)
+          PROJ_DIR="$(dirname "$(find /tmp/oss-cs/src -name '*.csproj' | sort | head -1)")"
+          echo "projeto C#: $PROJ_DIR"
+          (cd "$PROJ_DIR" && dotnet restore --nologo -v q || true)
+          CODE_INTEL_E2E_REPO="$PROJ_DIR" CODE_INTEL_E2E_LANG=csharp python3 mcp/e2e/run.py --real
