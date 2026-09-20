@@ -5,129 +5,188 @@
 <h1 align="center">ide_<code>cc</code> · code intelligence <strong>CRITICAL</strong></h1>
 
 <p align="center">
-  <b>Uma IDE na mão da LLM.</b><br>
-  Um servidor <b>MCP</b> que dá ao seu agente (Claude Code &amp; afins) operações <b>semânticas</b> de
-  código — navegar, renomear, mover, extrair — <b>rápidas</b> e <b>seguras</b>, sobre language servers reais.
+  <b>The refactoring layer that refuses to break your build.</b><br>
+  An <b>MCP</b> server that gives your agent (Claude Code &amp; friends) <b>semantic</b> code
+  operations — navigate, rename, move, extract — that are <b>fast</b> and, above all,
+  <b>verified</b>: an edit is either <b>correct by construction</b> or it is <b>not applied</b>.
 </p>
 
 <p align="center">
   <a href="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml"><img src="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/CenturyBoys/ide_cc/releases"><img src="https://img.shields.io/github/v/release/CenturyBoys/ide_cc?sort=semver" alt="Release"></a>
-  <img src="https://img.shields.io/badge/linguagens-5-blue" alt="5 linguagens">
-  <img src="https://img.shields.io/badge/ferramentas-10-blueviolet" alt="10 ferramentas">
+  <img src="https://img.shields.io/badge/languages-5-blue" alt="5 languages">
+  <img src="https://img.shields.io/badge/tools-10-blueviolet" alt="10 tools">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT"></a>
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 ---
 
-## Por que isto é CRITICAL
+## You use an IDE. Why don't your agents?
 
-Peça a um agente *"renomeie a classe `Widget` para `Gadget`"*. Sem uma camada semântica, ele cai no
-`grep`/`sed` — e **corrompe em silêncio**: troca a string `"Widget"`, o comentário, e até uma
-constante `Widget` **não-relacionada** noutro arquivo. E o pior: **compila**. Um bug silencioso que
-ninguém vê. Isso, num refactor grande, é **crítico**.
+When *you* rename a class, you don't `grep`/`sed` it — you let the IDE do it, because the IDE
+understands the code. Your agent, by default, has none of that. Ask it *"rename the class `Widget`
+to `Gadget`"* and, without a semantic layer, it falls back to text substitution — and **corrupts
+things silently**: it swaps the string `"Widget"`, a comment, and even an **unrelated** `Widget`
+constant in another file. Worst of all: **it still compiles.** A silent bug nobody sees. In a large
+refactor, that's **critical**.
 
-> **A tese:** o LLM decide **o quê**; a ferramenta faz a operação **mecânica** (via LSP); o
-> validador **confere** (`net_delta` + build). A mudança é **correta por construção** — não
-> "torcendo pra ter raciocinado certo".
+> **The thesis:** the LLM decides **what**; the tool performs the **mechanical** operation (via LSP);
+> the validator **checks** the result (`net_delta` + build). The change is **correct by
+> construction** — not "hoping the model reasoned correctly."
 
-### Prova de valor (medida)
+So yes — this gives your agent an IDE-grade semantic layer. But navigation isn't the point; the
+native LSP in Claude Code already does that. **Our point is the guarantee on the *edit*.**
 
-Renomear a classe `Widget` num projeto com armadilhas (const homônima, strings, substrings):
+### Proof of value (measured)
 
-| | Correto? | O que aconteceu |
+Renaming the class `Widget` in a project full of traps (a same-named constant, string literals,
+substrings like `WidgetFactory`):
+
+| | Correct? | What happened |
 |---|---|---|
-| **texto-cru** (`\bWidget\b`→sed) | **NÃO** ❌ | trocou strings e a const alheia — **e compilou** (bug silencioso) |
-| **`rename_symbol`** (semântico) | **SIM** ✅ | só a classe e suas refs; armadilhas intactas; build limpo |
+| **raw text** (`\bWidget\b`→sed) | **NO** ❌ | swapped string literals and the unrelated const — **and it compiled** (silent bug) |
+| **`rename_symbol`** (semantic) | **YES** ✅ | only the class and its refs; traps untouched; clean build |
 
-Num agente forte, **sem** a camada acerta ~2/3 (raciocina, mas falha); **com** a camada = **3/3
-com garantia**. Detalhes: [`docs/AB-EXPERIMENT.md`](docs/AB-EXPERIMENT.md).
+With a strong agent, **without** the layer it gets it right ~2/3 of the time (it reasons, but slips);
+**with** the layer it's **3/3 with a guarantee**. Details: [`docs/AB-EXPERIMENT.md`](docs/AB-EXPERIMENT.md).
 
-## O que torna isto diferente
+## How we're different
 
-- 🔥 **Gate de warmup** — nunca retorna referências **parciais** durante a indexação (o
-  *cold-index race*, um bug real de agentes). Provado transversal: 5 linguagens.
-- 🛡️ **apply → verify (`net_delta`)** — simula a edição **em memória**, mede erros antes/depois e
-  **só aplica se não introduzir erros**; `verify_build` roda o build no disco e reverte se falhar.
-- 🔄 **Frescor** — reflete edições feitas **fora** do agente (re-sync por mtime).
-- ⚡ **Cache entre sessões** (opt-in) — daemon mantém os LSPs quentes entre reinícios do MCP
-  (**~23×** na 2ª sessão em projetos pesados como Rust/C#).
-- 🩺 **`doctor`** — verifica e **corrige** o setup por linguagem (ex.: cria o `pyrightconfig.json`
-  do Python detectando `src/` e o `.venv`).
+There are already good LSP→MCP bridges. What no one else ships as a **guarantee** is the safety on
+the write path:
 
-## Ferramentas (10)
+- 🛡️ **apply → verify → auto-rollback** — `net_delta` simulates the edit **in memory**, measures
+  errors before/after, and **applies only if it introduces none**; `verify_build` then runs the real
+  build **on disk** and **reverts** if it fails. Other tools hand you diagnostics and let *you* run
+  the build; here the tool **refuses to leave your tree broken**.
+- 🔥 **Warmup gate** — never returns **partial** references while the index is still building (the
+  *cold-index race*, a real agent bug). Proven across all 5 languages.
+- 🩺 **`doctor`** — checks **and fixes** per-language setup (e.g. generates Python's
+  `pyrightconfig.json` by detecting `src/` and the `.venv`). This catches the *silent-incomplete*
+  failure mode — where `find_references` quietly returns too few results because the workspace was
+  misconfigured (measured: **5 vs 61** refs on a real project).
+- 🔄 **Freshness** — reflects edits made **outside** the agent (mtime re-sync).
+- ⚡ **Cross-session cache** (opt-in) — a daemon keeps the language servers warm across MCP restarts
+  (**~23×** faster on the 2nd session for heavy projects like Rust/C#).
 
-| Tool | O que faz |
+## How we compare
+
+Honest table. We cover fewer languages than the generalists on purpose — the bet is **depth and
+safety on the edit**, not breadth of navigation.
+
+| | **ide_cc** | Serena | agent-lsp | generic LSP→MCP bridges |
+|---|---|---|---|---|
+| Semantic rename / navigation | ✅ | ✅ | ✅ | ✅ |
+| In-memory pre-check (`net_delta`) | ✅ | ❌ | ✅ | ❌ |
+| **Real build run + auto-rollback** | ✅ **(tool guarantee)** | ❌ (you run it) | ⚠️ (opt-in skill) | ❌ |
+| Warmup / cold-index protection | ✅ | ✅ | ✅ | ❌ (often per-request cold start) |
+| Setup **auto-fix** (`doctor`) | ✅ | ❌ | ❌ | ❌ |
+| Cross-session warm cache | ✅ | ❌ | ⚠️ (persistent session) | ❌ |
+| Languages | 5 | 40+ | 30 | many |
+
+> If you want the widest language coverage, **Serena** and **agent-lsp** are excellent. If your
+> priority is that a refactor **never silently breaks the build**, that's what we optimize for.
+
+## Tools (10)
+
+| Tool | What it does |
 |---|---|
-| `find_references` | todas as referências semânticas a um símbolo (com gate de warmup) |
-| `rename_symbol` | rename semântico com apply→verify (`net_delta` + `verify_build` opcional) |
-| `move_symbol` | move símbolo para novo arquivo, atualizando imports |
-| `extract_function` | extrai um trecho para uma nova função |
-| `document_symbols` | árvore de símbolos (classes → métodos) de um arquivo |
-| `find_symbol` | acha símbolo por `Classe/metodo`, com posição exata |
-| `workspace_symbols` | busca símbolo em todo o projeto |
-| `call_hierarchy` | quem chama este símbolo (incoming calls) |
-| `validate_build` | roda o build da linguagem e reporta erros (2ª camada de segurança) |
-| `doctor` | verifica/corrige o setup do projeto por linguagem |
+| `find_references` | all semantic references to a symbol (with warmup gate) |
+| `rename_symbol` | semantic rename with apply→verify (`net_delta` + optional `verify_build`) |
+| `move_symbol` | moves a symbol to a new file, updating imports |
+| `extract_function` | extracts a snippet into a new function |
+| `document_symbols` | symbol tree (classes → methods) of a file |
+| `find_symbol` | finds a symbol by `Class/method`, with exact position |
+| `workspace_symbols` | searches for a symbol across the whole project |
+| `call_hierarchy` | who calls this symbol (incoming calls) |
+| `validate_build` | runs the language build and reports errors (2nd safety layer) |
+| `doctor` | checks/fixes per-language project setup |
 
-## Linguagens (5)
+## Languages (5)
 
-| Linguagem | Navegação / rename | Refactorings | Setup requerido |
+| Language | Navigation / rename | Refactorings | Setup required |
 |---|---|---|---|
-| TypeScript/JS | **tsgo** (rápido, não trunca) | **vtsls** | `tsconfig.json` |
+| TypeScript/JS | **tsgo** (fast, doesn't truncate) | **vtsls** | `tsconfig.json` |
 | Python | **basedpyright** | basedpyright | ⚠️ `[tool.basedpyright]` (use `doctor`) |
 | Dart | **dart language-server** | dart | `dart pub get` |
 | Rust | **rust-analyzer** | rust-analyzer | `Cargo.toml` |
 | C# | **csharp-ls** (Roslyn) | csharp-ls | .NET SDK + `DOTNET_ROOT` |
 
-Requisitos e gotchas por linguagem: [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md).
+Per-language requirements and gotchas: [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md).
 
-## Instalação
+## Install
 
-**Tudo em um comando** (baixa o binário, instala os language servers e registra global no Claude Code):
+Prebuilt binaries for **Linux** (x86_64 / arm64), **macOS** (Apple Silicon / Intel) and
+**Windows** (x86_64).
+
+### Linux / macOS
+
+**One command** (downloads the binary, installs the language servers, registers it globally in
+Claude Code):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CenturyBoys/ide_cc/main/install.sh | INSTALL_LSP=1 REGISTER=1 bash
 ```
 
-Ou só o binário (e você cuida do resto):
+Or just the binary (you handle the rest):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CenturyBoys/ide_cc/main/install.sh | bash
 ```
 
-Registrar **global** no Claude Code (todos os projetos, sem `.mcp.json` por pasta):
+### Windows (PowerShell)
+
+**One command** (binary + language servers + global registration in Claude Code):
+```powershell
+$env:INSTALL_LSP=1; $env:REGISTER=1; irm https://raw.githubusercontent.com/CenturyBoys/ide_cc/main/install.ps1 | iex
+```
+
+Or just the binary:
+```powershell
+irm https://raw.githubusercontent.com/CenturyBoys/ide_cc/main/install.ps1 | iex
+```
+
+> **Windows note:** every semantic tool works. The only feature not available is the opt-in
+> cross-session cache (`CODE_INTEL_DAEMON`), which relies on Unix sockets. Alternatively, run the
+> Linux binary under **WSL** to get the daemon too.
+
+Register it **globally** in Claude Code (all projects, no per-folder `.mcp.json`):
 ```bash
 claude mcp add code-intel --scope user -- "$HOME/.local/bin/code-intel-mcp"
 ```
-Ou `.mcp.json` **por projeto** — exemplo:
+Or a **per-project** `.mcp.json` — example:
 ```json
 {
   "mcpServers": {
     "code-intel": {
-      "command": "/caminho/para/code-intel-mcp",
+      "command": "/path/to/code-intel-mcp",
       "env": { "TSGO_BIN": "tsgo", "VTSLS_BIN": "vtsls", "BASEDPYRIGHT_BIN": "basedpyright-langserver",
                "DART_BIN": "dart", "RUST_ANALYZER_BIN": "rust-analyzer", "CSHARP_LS_BIN": "csharp-ls" }
     }
   }
 }
 ```
-Cache entre sessões: adicione `"CODE_INTEL_DAEMON": "1"` ao `env`.
+Cross-session cache: add `"CODE_INTEL_DAEMON": "1"` to `env`.
 
-## Uso
+## Usage
 
-Num projeto novo, rode `doctor` uma vez (checa o setup; `fix=true` corrige). Depois é natural:
-> *"quantas referências a classe `Widget` tem?"* · *"renomeie a classe `Widget` para `Gadget`"*
+On a new project, run `doctor` once (checks setup; `fix=true` repairs it). After that it's natural:
+> *"how many references does the class `Widget` have?"* · *"rename the class `Widget` to `Gadget`"*
 
-O agente usa as ferramentas semânticas (a skill [`semantic-refactor`](.claude/skills/semantic-refactor/SKILL.md)
-o orienta a preferir isso ao grep/sed). Você decide **o quê**; a ferramenta garante a precisão mecânica.
+The agent uses the semantic tools (the [`semantic-refactor`](.claude/skills/semantic-refactor/SKILL.md)
+skill nudges it to prefer these over grep/sed). You decide **what**; the tool guarantees the
+mechanical precision.
 
-## Documentação
+## Documentation
 
-- [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md) — requisitos por linguagem (⚠️ Python)
-- [`docs/AB-EXPERIMENT.md`](docs/AB-EXPERIMENT.md) — a prova de valor (com/sem a camada)
+- [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md) — per-language requirements (⚠️ Python)
+- [`docs/AB-EXPERIMENT.md`](docs/AB-EXPERIMENT.md) — the proof of value (with/without the layer)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) · [`docs/RELATORIO-LEVANTAMENTO.md`](docs/RELATORIO-LEVANTAMENTO.md) · [`docs/WORKFLOW.md`](docs/WORKFLOW.md)
-- [`CHANGELOG.md`](CHANGELOG.md) · [`CLAUDE.md`](CLAUDE.md) (guia IA-first)
-- [`mcp/README.md`](mcp/README.md) — detalhes do servidor · [`benchmarks/README.md`](benchmarks/README.md) — latência dos 5 servers
+- [`CHANGELOG.md`](CHANGELOG.md) · [`CLAUDE.md`](CLAUDE.md) (AI-first guide)
+- [`mcp/README.md`](mcp/README.md) — server details · [`benchmarks/README.md`](benchmarks/README.md) — latency of the 5 servers
 
-## Licença
+## License
 
-MIT — ver [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
