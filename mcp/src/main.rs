@@ -87,25 +87,52 @@ fn is_conn_dead(e: &str) -> bool {
     e.contains("pipe") || e.contains("broken") || e.contains("os error 32")
 }
 
+// Acha `symbol` como IDENTIFICADOR COMPLETO em `row` (word boundary): o char antes e depois não
+// pode ser [A-Za-z0-9_]. Sem isso, "Result" casaria DENTRO de "RefundResult" e o rename atingiria
+// o símbolo errado (Bug 2 do relatório). Retorna o byte-offset (= coluna p/ ASCII).
+fn find_ident(row: &str, symbol: &str) -> Option<usize> {
+    if symbol.is_empty() {
+        return None;
+    }
+    let bytes = row.as_bytes();
+    let slen = symbol.len();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut start = 0usize;
+    while let Some(rel) = row[start..].find(symbol) {
+        let i = start + rel;
+        let before_ok = i == 0 || !is_ident(bytes[i - 1]);
+        let after = i + slen;
+        let after_ok = after >= bytes.len() || !is_ident(bytes[after]);
+        if before_ok && after_ok {
+            return Some(i);
+        }
+        start = i + 1;
+    }
+    None
+}
+
 // Localiza a posição (LSP 0-indexed) do símbolo no arquivo. `line` opcional é 1-indexed (humano).
+// Casa por IDENTIFICADOR COMPLETO (não substring) — ver find_ident.
 fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64), String> {
     let text = std::fs::read_to_string(abs_file).map_err(|e| format!("ler {abs_file}: {e}"))?;
     let lines: Vec<&str> = text.split('\n').collect();
     if let Some(l) = line {
         let idx = (l as usize).saturating_sub(1);
         if let Some(row) = lines.get(idx) {
-            if let Some(c) = row.find(symbol) {
+            if let Some(c) = find_ident(row, symbol) {
                 return Ok((idx as u64, c as u64));
             }
         }
-        return Err(format!("símbolo '{symbol}' não achado na linha {l}"));
+        return Err(format!(
+            "identificador '{symbol}' não achado na linha {l} (match por palavra inteira)"
+        ));
     }
     for (i, row) in lines.iter().enumerate() {
-        if let Some(c) = row.find(symbol) {
+        if let Some(c) = find_ident(row, symbol) {
             return Ok((i as u64, c as u64));
         }
     }
-    Err(format!("símbolo '{symbol}' não achado em {abs_file}"))
+    Err(format!("identificador '{symbol}' não achado em {abs_file}"))
 }
 
 // Varre `lines` a partir de `start` (0-based) até `max` linhas à frente procurando o token
@@ -2357,6 +2384,18 @@ mod tests {
         assert_eq!(kind_label(5, &lines, 1), "Class"); // class comum
         assert_eq!(kind_label(23, &lines, 2), "Struct"); // record struct já é kind Struct
         assert_eq!(kind_label(6, &lines, 1), "Method"); // não-Class inalterado
+    }
+
+    // Bug 2 (relatório rename): locate deve casar IDENTIFICADOR COMPLETO, não substring —
+    // "Result" NÃO pode casar dentro de "RefundResult".
+    #[test]
+    fn find_ident_whole_word_not_substring() {
+        let row = "    RefundResult Result, Guid? RefundId";
+        assert_eq!(find_ident(row, "Result"), Some(17)); // o parâmetro, não o tipo
+        assert_eq!(find_ident(row, "RefundResult"), Some(4)); // o tipo, inteiro
+        assert_eq!(find_ident("foobar baz", "foo"), None); // sem match inteiro
+        assert_eq!(find_ident("a.render()", "render"), Some(2)); // após '.' é boundary
+        assert_eq!(find_ident("value_id = 1", "value"), None); // 'value' dentro de 'value_id'
     }
 
     // P9: Python passa a ter comando de build/check default (antes: no-op silencioso).
