@@ -71,6 +71,20 @@ impl Server {
         map.insert(key, c.clone());
         Ok(c)
     }
+
+    // Descarta o client em cache e sobe um novo — usado quando o backend cai (pipe quebrado)
+    // durante um refactoring, para recuperar sem exigir restart do MCP.
+    fn restart_client(&self, project: &str, backend: &str) -> Result<Arc<LspClient>, String> {
+        let key = format!("{project}\u{0}{backend}");
+        self.clients.lock().unwrap().remove(&key);
+        self.client(project, backend)
+    }
+}
+
+// Heurística: o erro indica que o backend fechou a conexão (processo morto)?
+fn is_conn_dead(e: &str) -> bool {
+    let e = e.to_lowercase();
+    e.contains("pipe") || e.contains("broken") || e.contains("os error 32")
 }
 
 // Localiza a posição (LSP 0-indexed) do símbolo no arquivo. `line` opcional é 1-indexed (humano).
@@ -242,14 +256,25 @@ fn sym_pos(s: &Value) -> (u64, u64) {
     )
 }
 
-// achata a árvore de documentSymbol em (name_path, kind, line, char)
+// achata a árvore de documentSymbol em (name_path, kind, line, char).
+// Suporta os DOIS formatos do LSP:
+//  - DocumentSymbol[] (hierárquico): usa `children` para o name_path "Classe/metodo".
+//  - SymbolInformation[] (achatado, ex.: tsgo/basedpyright/csharp-ls): reconstrói o name_path
+//    via `containerName` — senão métodos viriam como "metodo" (sem a classe) e queries compostas
+//    "Classe/metodo" não resolveriam / não teriam precisão entre classes homônimas.
 fn flatten_symbols(symbols: &[Value], prefix: &str, out: &mut Vec<(String, u64, u64, u64)>) {
     for s in symbols {
         let name = s["name"].as_str().unwrap_or("");
-        let fp = if prefix.is_empty() {
-            name.to_string()
-        } else {
+        let fp = if !prefix.is_empty() {
             format!("{prefix}/{name}")
+        } else if let Some(cn) = s
+            .get("containerName")
+            .and_then(|v| v.as_str())
+            .filter(|c| !c.is_empty())
+        {
+            format!("{cn}/{name}")
+        } else {
+            name.to_string()
         };
         let (l, c) = sym_pos(s);
         let kind = s["kind"].as_u64().unwrap_or(0);
@@ -276,15 +301,21 @@ fn strip_sigs(path: &str) -> String {
 }
 
 // Casa um name_path achatado `fp` (possivelmente com assinatura de método, ex.: csharp-ls)
-// contra a `query` do usuário (sem assinatura). Normaliza `fp` antes de comparar (então métodos
-// C# resolvem). Critérios: igualdade exata, sufixo "/query" ou — SÓ quando a query não qualifica
-// a classe (sem '/') — último segmento igual. Assim uma query composta "A/foo" não casa "B/foo".
+// contra a `query` do usuário (sem assinatura). Normaliza `fp` antes de comparar (métodos C#
+// resolvem). Critérios:
+//  - igualdade exata ou sufixo "/query" (fp hierárquico ou com containerName);
+//  - último segmento igual, permitido quando a query NÃO qualifica a classe (sem '/') OU quando o
+//    `fp` é ACHATADO (sem '/': o server não deu info de classe — ex.: csharp-ls sem containerName).
+//    Assim "A/foo" NÃO casa "B/foo" quando há hierarquia, mas casa um "foo" achatado (best-effort).
 fn name_path_matches(fp: &str, query: &str) -> bool {
     let nfp = strip_sigs(fp);
     if nfp == query || nfp.ends_with(&format!("/{query}")) {
         return true;
     }
-    !query.contains('/') && nfp.rsplit('/').next() == Some(base_name(query))
+    let q_last = base_name(query.rsplit('/').next().unwrap_or(query));
+    let last_matches = nfp.rsplit('/').next() == Some(q_last);
+    let fp_flat = !nfp.contains('/');
+    last_matches && (!query.contains('/') || fp_flat)
 }
 
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
@@ -911,7 +942,8 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
         .as_u64()
         .ok_or("faltou 'end_line' (1-indexed)")?;
     let apply = a["apply"].as_bool().unwrap_or(false);
-    let client = srv.client(project, refactor_backend(file))?; // vtsls tem os refactorings
+    let backend = refactor_backend(file); // vtsls tem os refactorings de TS
+    let mut client = srv.client(project, backend)?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("ler {abs}: {e}"))?;
@@ -925,14 +957,20 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let start_col = a["start_col"].as_u64().unwrap_or(0);
     let range = json!({"start":{"line":start_line-1,"character":start_col},"end":{"line":end_line-1,"character":end_col}});
     let uri = path_to_uri(&abs);
-    // prefere extração para o escopo do módulo (função nomeada no topo)
-    let edit = refactor_edit(
-        &client,
-        &uri,
-        &range,
-        "refactor.extract.function",
-        Some("module scope"),
-    )?;
+    // prefere extração para o escopo do módulo (função nomeada no topo).
+    // Recuperação: se o backend (ex.: vtsls) fechar a conexão no meio, reinicia e tenta 1x.
+    let kind = "refactor.extract.function";
+    let edit = match refactor_edit(&client, &uri, &range, kind, Some("module scope")) {
+        Ok(e) => e,
+        Err(e) if is_conn_dead(&e) => {
+            client = srv.restart_client(project, backend)?;
+            client.ensure_open(&abs)?;
+            refactor_edit(&client, &uri, &range, kind, Some("module scope")).map_err(|e2| {
+                format!("backend '{backend}' fechou a conexão durante extract.function e falhou após reinício (provável crash do backend): {e2}")
+            })?
+        }
+        Err(e) => return Err(e),
+    };
     let mut result = verify_and_apply(
         &client,
         &edit,
@@ -951,13 +989,34 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false);
-    let client = srv.client(project, refactor_backend(file))?;
+    let backend = refactor_backend(file);
+    let mut client = srv.client(project, backend)?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let range = json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c}});
     let uri = path_to_uri(&abs);
-    let edit = refactor_edit(&client, &uri, &range, "refactor.move", Some("new file"))?;
+    // Recuperação: se o backend cair no meio, reinicia e tenta 1x.
+    let edit = match refactor_edit(&client, &uri, &range, "refactor.move", Some("new file")) {
+        Ok(e) => e,
+        Err(e) if is_conn_dead(&e) => {
+            client = srv.restart_client(project, backend)?;
+            client.ensure_open(&abs)?;
+            refactor_edit(&client, &uri, &range, "refactor.move", Some("new file")).map_err(|e2| {
+                format!("backend '{backend}' fechou a conexão durante move e falhou após reinício: {e2}")
+            })?
+        }
+        Err(e) => return Err(e),
+    };
+    // Achado 2 (relatório): "mover para novo arquivo" que NÃO cria arquivo é no-op — alguns backends
+    // (ex.: csharp-ls) devolvem uma ação refactor.move trivial. Reporta honestamente em vez de safe:true.
+    if creates_from(&edit).is_empty() {
+        return Ok(json!({
+            "operation": "move_symbol", "symbol": symbol,
+            "applied": false, "safe": false, "unsupported": true, "error": "move_no_op",
+            "detail": format!("o backend '{backend}' não produziu um 'mover para novo arquivo' (nenhum arquivo criado) — seria no-op. move_symbol via novo arquivo é suportado hoje em TypeScript (vtsls)."),
+        }));
+    }
     let mut result = verify_and_apply(
         &client,
         &edit,
@@ -1050,9 +1109,25 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(60_000);
     let start = Instant::now();
-    let res = loop {
+    // No cold index, alguns servers (Dart) devolvem [] VÁLIDO enquanto ainda indexam — não é erro.
+    // Reintenta tanto em erro quanto em VAZIO até o budget; senão o "silent empty" volta (bug Dart).
+    let mut res = json!([]);
+    let mut timed_out = false;
+    loop {
         match client.request("workspace/symbol", json!({"query": query}), per_req) {
-            Ok(r) => break r,
+            Ok(r) => {
+                let empty = r.as_array().map(|a| a.is_empty()).unwrap_or(true);
+                if !empty {
+                    res = r;
+                    break;
+                }
+                if start.elapsed().as_millis() >= budget {
+                    res = r; // aceita o vazio após o budget (símbolo pode realmente não existir)
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(400));
+            }
             Err(e) => {
                 if start.elapsed().as_millis() >= budget {
                     return Ok(json!({
@@ -1064,7 +1139,7 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
                 std::thread::sleep(Duration::from_millis(500));
             }
         }
-    };
+    }
     let root = client.root().to_string();
     let list: Vec<Value> = res
         .as_array()
@@ -1079,7 +1154,16 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
                    "at": format!("{}:{}:{}", rel(&root, uri), l + 1, c + 1)})
         })
         .collect();
-    Ok(json!({"query": query, "count": list.len(), "symbols": list}))
+    // vazio após o budget: sinaliza que PODE ser índice não-pronto (não afirma "não existe").
+    let warning = if timed_out {
+        json!(format!(
+            "resultado vazio após {budget}ms — {}",
+            index_not_ready_hint()
+        ))
+    } else {
+        Value::Null
+    };
+    Ok(json!({"query": query, "count": list.len(), "symbols": list, "warning": warning}))
 }
 
 fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
@@ -1183,7 +1267,11 @@ fn detect_langs(project: &str) -> Vec<&'static str> {
 fn find_source_file(project: &str, ext: &str) -> Option<String> {
     fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32) -> Option<String> {
         let mut subdirs = vec![];
-        for e in std::fs::read_dir(dir).ok()?.flatten() {
+        // ordena as entradas -> descoberta DETERMINÍSTICA (o smoke test escolhe sempre o mesmo
+        // arquivo, independente da ordem do SO).
+        let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
             if *budget == 0 {
                 return None;
             }
@@ -1519,7 +1607,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "extract_function",
-            "description": "Extrai um intervalo de linhas para uma nova função (escopo do módulo), via refactoring semântico (vtsls). Mesmo ciclo apply→verify com net_delta: apply=false=preview; apply=true persiste só se seguro.",
+            "description": "Extrai um intervalo de linhas para uma nova função (escopo do módulo), via o refactoring do language server (vtsls no TS; o próprio server nas demais linguagens). Mesmo ciclo apply→verify com net_delta: apply=false=preview; apply=true persiste só se seguro. Se o backend cair, reinicia e tenta 1x.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1536,7 +1624,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "move_symbol",
-            "description": "Move um símbolo (top-level) para um novo arquivo, via refactoring semântico (vtsls), atualizando os imports. Mesmo ciclo apply→verify com net_delta (suporta criação de arquivo). 'symbol' aceita name_path.",
+            "description": "Move um símbolo (top-level) para um NOVO arquivo, via o refactoring do language server, atualizando os imports. Mesmo ciclo apply→verify com net_delta (cria arquivo). Confiável hoje em TypeScript (vtsls); se o backend não implementar 'mover para novo arquivo' (ex.: csharp-ls), retorna unsupported/move_no_op em vez de fingir sucesso. 'symbol' aceita name_path.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1691,46 +1779,91 @@ fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
     }
 }
 
-// no MCP: encaminha um tools/call ao daemon (sobe o daemon se necessário)
+// Handle do daemon que ESTE processo subiu — mantido para reap (evita zumbi <defunct> quando ele
+// morre: o proxy é o pai, então precisa dar wait() no filho morto).
+#[cfg(unix)]
+static DAEMON_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+
+// Reap do daemon anterior (se morto) e sobe um novo, guardando o handle para reap futuro.
+#[cfg(unix)]
+fn spawn_daemon() {
+    let mut guard = DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(mut old) = guard.take() {
+        let _ = old.kill(); // idempotente se já morto
+        let _ = old.wait(); // reap → sem processo <defunct>
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(child) = std::process::Command::new(exe)
+            .arg("--daemon")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            *guard = Some(child);
+        }
+    }
+}
+
+// Espera o socket do daemon aceitar conexão, até `ms`.
+#[cfg(unix)]
+fn wait_socket(path: &str, ms: u64) {
+    let start = Instant::now();
+    while std::os::unix::net::UnixStream::connect(path).is_err()
+        && start.elapsed() < Duration::from_millis(ms)
+    {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// UMA tentativa de forward: conecta, envia, lê a resposta. Err em qualquer falha de I/O (usado
+// para disparar o failover).
+#[cfg(unix)]
+fn try_forward(path: &str, name: &str, args: &Value) -> Result<Value, String> {
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(path).map_err(|e| format!("connect: {e}"))?;
+    let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
+    writeln!(stream, "{}", serde_json::to_string(&req).unwrap())
+        .map_err(|e| format!("write: {e}"))?;
+    stream.flush().ok();
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    let n = reader
+        .read_line(&mut line)
+        .map_err(|e| format!("read: {e}"))?;
+    if n == 0 {
+        return Err("conexão fechada pelo daemon (EOF)".into());
+    }
+    let v: Value = serde_json::from_str(&line).map_err(|e| format!("parse: {e}"))?;
+    v.get("result")
+        .cloned()
+        .ok_or_else(|| "resposta sem 'result'".into())
+}
+
+// no MCP: encaminha um tools/call ao daemon (sobe se necessário) com FAILOVER — se a conexão
+// quebrar (daemon morto no meio), respawna (reapando o zumbi) e tenta MAIS UMA vez antes de errar.
 #[cfg(unix)]
 fn forward_call(name: &str, args: &Value) -> Value {
     let path = sock_path();
     if std::os::unix::net::UnixStream::connect(&path).is_err() {
-        if let Ok(exe) = std::env::current_exe() {
-            let _ = std::process::Command::new(exe)
-                .arg("--daemon")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-        }
-        let start = Instant::now();
-        while std::os::unix::net::UnixStream::connect(&path).is_err()
-            && start.elapsed() < Duration::from_secs(5)
-        {
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        spawn_daemon();
+        wait_socket(&path, 5000);
     }
-    let err = |m: &str| json!({"content":[{"type":"text","text": format!("ERRO: {m}")}], "isError": true});
-    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&path) else {
-        return err("daemon indisponível");
-    };
-    let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
-    if writeln!(stream, "{}", serde_json::to_string(&req).unwrap()).is_err() {
-        return err("falha ao enviar ao daemon");
-    }
-    let _ = stream.flush();
-    let mut reader = std::io::BufReader::new(stream);
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_ok() {
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            return v
-                .get("result")
-                .cloned()
-                .unwrap_or_else(|| err("resposta vazia do daemon"));
+    match try_forward(&path, name, args) {
+        Ok(v) => v,
+        Err(_) => {
+            // daemon indisponível/morto → failover: respawna e tenta 1x
+            spawn_daemon();
+            wait_socket(&path, 8000);
+            match try_forward(&path, name, args) {
+                Ok(v) => v,
+                Err(e) => json!({
+                    "content": [{"type":"text","text": format!("ERRO: daemon indisponível após failover: {e}")}],
+                    "isError": true
+                }),
+            }
         }
     }
-    err("falha ao ler do daemon")
 }
 
 fn main() {
@@ -1870,6 +2003,30 @@ mod tests {
 
         let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
         assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    // Relatório extract/move: detecção de backend morto (dispara restart+retry do refactoring).
+    #[test]
+    fn is_conn_dead_detects_broken_pipe() {
+        assert!(is_conn_dead("Broken pipe (os error 32)"));
+        assert!(is_conn_dead("write: Broken pipe"));
+        assert!(!is_conn_dead(
+            "nenhum refactoring 'refactor.move' disponível nesta posição/seleção"
+        ));
+        assert!(!is_conn_dead(
+            "timeout (10000ms) em textDocument/codeAction"
+        ));
+    }
+
+    // Relatório e2e: servers ACHATADOS sem containerName (csharp-ls) → fp sem classe. A query
+    // composta deve casar por último segmento (best-effort), mas hierarquia mantém precisão.
+    #[test]
+    fn name_path_matches_flat_server_composite_query() {
+        assert!(name_path_matches("DoWork(int x)", "Handler/DoWork"));
+        assert!(name_path_matches("DoWork", "Handler/DoWork"));
+        // com hierarquia (containerName), a classe importa:
+        assert!(!name_path_matches("Gadget/render", "Widget/render"));
+        assert!(name_path_matches("Widget/render", "Widget/render"));
     }
 
     // Regressão do relatório Dart: workspace_symbols roteava lang!=python p/ tsgo em silêncio.

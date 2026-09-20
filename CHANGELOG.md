@@ -6,6 +6,44 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-20
+
+### Added
+- **Suíte e2e** (`mcp/e2e/`, job CI dedicado): roda as ferramentas REAIS contra os 5 language
+  servers REAIS sobre fixtures que reproduzem cada armadilha dos relatórios de campo (decorator,
+  método em C#, `workspace_symbols` Dart, move no-op, extract). Modo opt-in `--real` aponta pra um
+  repo grande de verdade (valida escala/warmup via `doctor smoke=true`). Cobre o que o `cargo test`
+  (lógica pura) não vê — e já pegou 2 bugs (abaixo).
+
+### Fixed
+- **`find_symbol`/`document_symbols` — name_path composto vazio em servers ACHATADOS** (pego pela
+  suíte e2e): tsgo/basedpyright/csharp-ls retornam `SymbolInformation[]` (achatado, com
+  `containerName`), não a árvore hierárquica; o `flatten_symbols` só olhava `children`, então
+  métodos vinham como `metodo` (sem a classe) e `find_symbol("Classe/metodo")` dava `count:0` (e
+  regrediu com o tightening de precisão). Agora o flatten reconstrói `Classe/metodo` via
+  `containerName` — precisão entre classes homônimas nos DOIS formatos. E quando o server é
+  achatado E **sem** `containerName` (csharp-ls), a query composta `Classe/metodo` casa por último
+  segmento (best-effort, sem info de classe) — mantendo precisão onde há hierarquia.
+- **`workspace_symbols` — "silent empty" no cold index** (pego pela suíte e2e, Dart): o servidor
+  devolvia `[]` VÁLIDO enquanto indexava e o retry (P5) só re-tentava em erro. Agora reintenta também
+  em VAZIO até o budget; se seguir vazio, sinaliza `warning` (pode não estar pronto) em vez de afirmar
+  "não existe". `find_source_file` (do doctor smoke) agora varre de forma determinística (ordenada).
+- **`move_symbol` reportava `safe:true` em C# sem mover nada (no-op silencioso)** (relatório
+  extract/move): o csharp-ls devolvia uma ação `refactor.move` trivial (sem criar arquivo), contada
+  como sucesso. Agora, se "mover para novo arquivo" **não cria arquivo** (`creates` vazio), retorna
+  `unsupported`/`move_no_op` honesto em vez de fingir sucesso. Coberto por teste (`is_conn_dead`).
+- **`extract_function`/`move_symbol` — recuperação de backend morto** (relatório extract/move: vtsls
+  fechava a conexão no TS → `ERRO: Broken pipe` cru): agora, ao detectar a conexão caída, **reinicia
+  o language server e tenta mais uma vez**; se persistir, dá erro acionável (provável crash do
+  backend) em vez do "Broken pipe" cru. Descrições das duas tools ajustadas (não são mais
+  "via vtsls" genérico). NB: se o vtsls crashar deterministicamente no extract, ainda falha — mas
+  agora com mensagem clara e sem deixar o client quebrado.
+- **Daemon sem failover + vazamento de zumbi** (issue #2, relatório Dart): quando o daemon morria, o
+  proxy devolvia `ERRO: falha ao ler do daemon` cru (sem recuperação) e o processo morto ficava
+  `<defunct>` (zumbi) sob o proxy. Agora o `forward_call` detecta a conexão quebrada, **respawna o
+  daemon e tenta mais uma vez** antes de errar; o handle do daemon é guardado e **reapado** (`wait()`)
+  no respawn — sem zumbi para o proxy que o subiu.
+
 ## [0.7.0] - 2026-09-20
 
 ### Added
@@ -158,7 +196,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...v0.5.0

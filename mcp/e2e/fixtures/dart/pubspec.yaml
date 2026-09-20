@@ -1,0 +1,7 @@
+name: e2e_fixture_dart
+description: fixture e2e do code-intel-mcp (Dart)
+version: 0.0.0
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+# sem dependências externas de propósito: `dart pub get` cria .dart_tool/package_config.json
+# (o análogo Dart do venv/pyrightconfig) sem baixar nada da rede.

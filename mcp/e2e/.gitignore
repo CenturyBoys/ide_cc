@@ -1,0 +1,11 @@
+# artefatos gerados pelos setups dos fixtures (dart pub get / dotnet restore / cargo / pyright)
+fixtures/*/.dart_tool/
+fixtures/*/pubspec.lock
+fixtures/*/.dart_tool
+fixtures/dart/lib/*.g.dart
+fixtures/*/bin/
+fixtures/*/obj/
+fixtures/rust/target/
+fixtures/rust/Cargo.lock
+fixtures/**/__pycache__/
+fixtures/python/pyrightconfig.json
