@@ -138,6 +138,23 @@ fn rel(root: &str, uri: &str) -> String {
 
 // GATE DE WARMUP: repete find_references até a contagem estabilizar (N iguais seguidas).
 // Retorna (locations, stable, warmup_ms, polls). `stable=false` => resultado NÃO confiável.
+// Aviso acionável quando o índice não estabiliza: sugere daemon (se desligado) e/ou esticar o teto.
+fn index_not_ready_hint() -> String {
+    let base = "index_not_ready: índice ainda indexando; NÃO use para rename/delete";
+    #[cfg(unix)]
+    {
+        if std::env::var("CODE_INTEL_DAEMON").is_ok() {
+            format!("{base} — aumente CODE_INTEL_WARMUP_MS se persistir")
+        } else {
+            format!("{base} — ligue CODE_INTEL_DAEMON=1 (sem daemon o warmup reinicia a cada chamada) e/ou aumente CODE_INTEL_WARMUP_MS")
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{base} — aumente CODE_INTEL_WARMUP_MS")
+    }
+}
+
 fn warmup_references(
     client: &LspClient,
     uri: &str,
@@ -149,8 +166,13 @@ fn warmup_references(
     let mut stable_hits = 0u32;
     let mut polls = 0u32;
     let mut refs: Vec<Value> = vec![];
-    // 60s: rust-analyzer roda cargo metadata + check no cold start (~30s no fixture medido).
-    while start.elapsed().as_millis() < 60_000 {
+    // Teto de warmup. Default 60s (rust-analyzer roda cargo metadata + check no cold start, ~30s
+    // no fixture medido). Repos grandes em cold start podem precisar de mais — CODE_INTEL_WARMUP_MS.
+    let budget_ms: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    while start.elapsed().as_millis() < budget_ms {
         polls += 1;
         // rust-analyzer LANÇA erro ('No references found at position') enquanto indexa;
         // tratamos como "ainda não pronto" e re-tentamos, em vez de propagar.
@@ -711,7 +733,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
         "symbol": symbol,
         "count": refs.len(),
         "stable": stable,
-        "warning": if stable { Value::Null } else { json!("index_not_ready: contagem AINDA mudando; NÃO use para rename/delete") },
+        "warning": if stable { Value::Null } else { json!(index_not_ready_hint()) },
         "warmup_ms": warmup_ms,
         "polls": polls,
         "references": locs,
@@ -1212,7 +1234,7 @@ fn tools_schema() -> Value {
     json!([
         {
             "name": "find_references",
-            "description": "Encontra TODAS as referências semânticas a um símbolo (via tsgo). Aguarda o índice estabilizar (gate de warmup) e sinaliza se o resultado ainda não é confiável. Use isto em vez de grep para rename/delete.",
+            "description": "Encontra TODAS as referências semânticas a um símbolo (via o language server da linguagem detectada: tsgo p/ TS, basedpyright p/ Python, rust-analyzer, csharp-ls, dart). Aguarda o índice estabilizar (gate de warmup) e sinaliza se o resultado ainda não é confiável. Use isto em vez de grep para rename/delete.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

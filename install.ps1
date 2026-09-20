@@ -49,7 +49,13 @@ Check-Lsp "csharp-ls"              "dotnet tool install --global csharp-ls"
 if ($env:INSTALL_LSP -eq "1") {
   Write-Host "`n>> instalando language servers (INSTALL_LSP=1)..."
   if (Get-Command npm    -ErrorAction SilentlyContinue) { npm i -g @typescript/native-preview @vtsls/language-server 2>$null; Write-Host "  [ok] tsgo + vtsls (npm)" }
-  if (Get-Command pip    -ErrorAction SilentlyContinue) { pip install -q basedpyright 2>$null; Write-Host "  [ok] basedpyright (pip)" }
+  # Python/basedpyright: tenta uv -> pipx -> pip -> python -m pip (o relatorio pachamama caiu aqui:
+  # so 'pip' era testado, mas o ambiente usava uv -> backend nunca instalado).
+  if     (Get-Command uv   -ErrorAction SilentlyContinue) { uv tool install basedpyright 2>$null; Write-Host "  [ok] basedpyright (uv)" }
+  elseif (Get-Command pipx -ErrorAction SilentlyContinue) { pipx install basedpyright 2>$null; Write-Host "  [ok] basedpyright (pipx)" }
+  elseif (Get-Command pip  -ErrorAction SilentlyContinue) { pip install -q basedpyright 2>$null; Write-Host "  [ok] basedpyright (pip)" }
+  elseif (Get-Command python -ErrorAction SilentlyContinue) { python -m pip install -q basedpyright 2>$null; Write-Host "  [ok] basedpyright (python -m pip)" }
+  else { Write-Host "  [falta] basedpyright - instale manualmente: uv tool install basedpyright" }
   if (Get-Command rustup -ErrorAction SilentlyContinue) { rustup component add rust-analyzer 2>$null; Write-Host "  [ok] rust-analyzer (rustup)" }
   if (Get-Command dotnet -ErrorAction SilentlyContinue) { dotnet tool install --global csharp-ls 2>$null; Write-Host "  [ok] csharp-ls (dotnet)" }
   Write-Host "  (Dart: instale o SDK manualmente se precisar)"
