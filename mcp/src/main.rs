@@ -71,6 +71,20 @@ impl Server {
         map.insert(key, c.clone());
         Ok(c)
     }
+
+    // Descarta o client em cache e sobe um novo — usado quando o backend cai (pipe quebrado)
+    // durante um refactoring, para recuperar sem exigir restart do MCP.
+    fn restart_client(&self, project: &str, backend: &str) -> Result<Arc<LspClient>, String> {
+        let key = format!("{project}\u{0}{backend}");
+        self.clients.lock().unwrap().remove(&key);
+        self.client(project, backend)
+    }
+}
+
+// Heurística: o erro indica que o backend fechou a conexão (processo morto)?
+fn is_conn_dead(e: &str) -> bool {
+    let e = e.to_lowercase();
+    e.contains("pipe") || e.contains("broken") || e.contains("os error 32")
 }
 
 // Localiza a posição (LSP 0-indexed) do símbolo no arquivo. `line` opcional é 1-indexed (humano).
@@ -911,7 +925,8 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
         .as_u64()
         .ok_or("faltou 'end_line' (1-indexed)")?;
     let apply = a["apply"].as_bool().unwrap_or(false);
-    let client = srv.client(project, refactor_backend(file))?; // vtsls tem os refactorings
+    let backend = refactor_backend(file); // vtsls tem os refactorings de TS
+    let mut client = srv.client(project, backend)?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("ler {abs}: {e}"))?;
@@ -925,14 +940,20 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let start_col = a["start_col"].as_u64().unwrap_or(0);
     let range = json!({"start":{"line":start_line-1,"character":start_col},"end":{"line":end_line-1,"character":end_col}});
     let uri = path_to_uri(&abs);
-    // prefere extração para o escopo do módulo (função nomeada no topo)
-    let edit = refactor_edit(
-        &client,
-        &uri,
-        &range,
-        "refactor.extract.function",
-        Some("module scope"),
-    )?;
+    // prefere extração para o escopo do módulo (função nomeada no topo).
+    // Recuperação: se o backend (ex.: vtsls) fechar a conexão no meio, reinicia e tenta 1x.
+    let kind = "refactor.extract.function";
+    let edit = match refactor_edit(&client, &uri, &range, kind, Some("module scope")) {
+        Ok(e) => e,
+        Err(e) if is_conn_dead(&e) => {
+            client = srv.restart_client(project, backend)?;
+            client.ensure_open(&abs)?;
+            refactor_edit(&client, &uri, &range, kind, Some("module scope")).map_err(|e2| {
+                format!("backend '{backend}' fechou a conexão durante extract.function e falhou após reinício (provável crash do backend): {e2}")
+            })?
+        }
+        Err(e) => return Err(e),
+    };
     let mut result = verify_and_apply(
         &client,
         &edit,
@@ -951,13 +972,34 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false);
-    let client = srv.client(project, refactor_backend(file))?;
+    let backend = refactor_backend(file);
+    let mut client = srv.client(project, backend)?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let range = json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c}});
     let uri = path_to_uri(&abs);
-    let edit = refactor_edit(&client, &uri, &range, "refactor.move", Some("new file"))?;
+    // Recuperação: se o backend cair no meio, reinicia e tenta 1x.
+    let edit = match refactor_edit(&client, &uri, &range, "refactor.move", Some("new file")) {
+        Ok(e) => e,
+        Err(e) if is_conn_dead(&e) => {
+            client = srv.restart_client(project, backend)?;
+            client.ensure_open(&abs)?;
+            refactor_edit(&client, &uri, &range, "refactor.move", Some("new file")).map_err(|e2| {
+                format!("backend '{backend}' fechou a conexão durante move e falhou após reinício: {e2}")
+            })?
+        }
+        Err(e) => return Err(e),
+    };
+    // Achado 2 (relatório): "mover para novo arquivo" que NÃO cria arquivo é no-op — alguns backends
+    // (ex.: csharp-ls) devolvem uma ação refactor.move trivial. Reporta honestamente em vez de safe:true.
+    if creates_from(&edit).is_empty() {
+        return Ok(json!({
+            "operation": "move_symbol", "symbol": symbol,
+            "applied": false, "safe": false, "unsupported": true, "error": "move_no_op",
+            "detail": format!("o backend '{backend}' não produziu um 'mover para novo arquivo' (nenhum arquivo criado) — seria no-op. move_symbol via novo arquivo é suportado hoje em TypeScript (vtsls)."),
+        }));
+    }
     let mut result = verify_and_apply(
         &client,
         &edit,
@@ -1519,7 +1561,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "extract_function",
-            "description": "Extrai um intervalo de linhas para uma nova função (escopo do módulo), via refactoring semântico (vtsls). Mesmo ciclo apply→verify com net_delta: apply=false=preview; apply=true persiste só se seguro.",
+            "description": "Extrai um intervalo de linhas para uma nova função (escopo do módulo), via o refactoring do language server (vtsls no TS; o próprio server nas demais linguagens). Mesmo ciclo apply→verify com net_delta: apply=false=preview; apply=true persiste só se seguro. Se o backend cair, reinicia e tenta 1x.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1536,7 +1578,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "move_symbol",
-            "description": "Move um símbolo (top-level) para um novo arquivo, via refactoring semântico (vtsls), atualizando os imports. Mesmo ciclo apply→verify com net_delta (suporta criação de arquivo). 'symbol' aceita name_path.",
+            "description": "Move um símbolo (top-level) para um NOVO arquivo, via o refactoring do language server, atualizando os imports. Mesmo ciclo apply→verify com net_delta (cria arquivo). Confiável hoje em TypeScript (vtsls); se o backend não implementar 'mover para novo arquivo' (ex.: csharp-ls), retorna unsupported/move_no_op em vez de fingir sucesso. 'symbol' aceita name_path.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1915,6 +1957,19 @@ mod tests {
 
         let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
         assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    // Relatório extract/move: detecção de backend morto (dispara restart+retry do refactoring).
+    #[test]
+    fn is_conn_dead_detects_broken_pipe() {
+        assert!(is_conn_dead("Broken pipe (os error 32)"));
+        assert!(is_conn_dead("write: Broken pipe"));
+        assert!(!is_conn_dead(
+            "nenhum refactoring 'refactor.move' disponível nesta posição/seleção"
+        ));
+        assert!(!is_conn_dead(
+            "timeout (10000ms) em textDocument/codeAction"
+        ));
     }
 
     // Regressão do relatório Dart: workspace_symbols roteava lang!=python p/ tsgo em silêncio.

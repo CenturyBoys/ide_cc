@@ -7,6 +7,16 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- **`move_symbol` reportava `safe:true` em C# sem mover nada (no-op silencioso)** (relatório
+  extract/move): o csharp-ls devolvia uma ação `refactor.move` trivial (sem criar arquivo), contada
+  como sucesso. Agora, se "mover para novo arquivo" **não cria arquivo** (`creates` vazio), retorna
+  `unsupported`/`move_no_op` honesto em vez de fingir sucesso. Coberto por teste (`is_conn_dead`).
+- **`extract_function`/`move_symbol` — recuperação de backend morto** (relatório extract/move: vtsls
+  fechava a conexão no TS → `ERRO: Broken pipe` cru): agora, ao detectar a conexão caída, **reinicia
+  o language server e tenta mais uma vez**; se persistir, dá erro acionável (provável crash do
+  backend) em vez do "Broken pipe" cru. Descrições das duas tools ajustadas (não são mais
+  "via vtsls" genérico). NB: se o vtsls crashar deterministicamente no extract, ainda falha — mas
+  agora com mensagem clara e sem deixar o client quebrado.
 - **Daemon sem failover + vazamento de zumbi** (issue #2, relatório Dart): quando o daemon morria, o
   proxy devolvia `ERRO: falha ao ler do daemon` cru (sem recuperação) e o processo morto ficava
   `<defunct>` (zumbi) sob o proxy. Agora o `forward_call` detecta a conexão quebrada, **respawna o
