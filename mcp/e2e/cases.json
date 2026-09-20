@@ -26,6 +26,42 @@
         "tool": "doctor",
         "args": {"smoke": true},
         "assert": [{"path": "problems", "op": "==", "value": 0}, {"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      },
+      {
+        "name": "ADVERSARIAL P8: rename com COLISÃO de escopo é barrado (typeCheckingMode=off → net_delta inerte)",
+        "tool": "rename_symbol",
+        "args": {"file": "models.py", "symbol": "ResponseModel/make", "new_name": "build", "apply": false},
+        "assert": [{"path": "error", "op": "==", "value": "name_collision"}, {"path": "safe", "op": "==", "value": false}]
+      },
+      {
+        "name": "ADVERSARIAL P12: rename para keyword é rejeitado (não noop silencioso)",
+        "tool": "rename_symbol",
+        "args": {"file": "models.py", "symbol": "ResponseCode", "new_name": "class", "apply": false},
+        "assert": [{"path": "error", "op": "==", "value": "invalid_new_name"}]
+      },
+      {
+        "name": "ADVERSARIAL P12: rename para o MESMO nome é noop",
+        "tool": "rename_symbol",
+        "args": {"file": "models.py", "symbol": "ResponseCode", "new_name": "ResponseCode", "apply": false},
+        "assert": [{"path": "mode", "op": "==", "value": "noop"}]
+      },
+      {
+        "name": "ADVERSARIAL P11: extract_function em Python retorna erro explícito (não suportado)",
+        "tool": "extract_function",
+        "args": {"file": "models.py", "start_line": 7, "end_line": 7, "apply": false},
+        "assert": [{"path": "__error__", "op": "present"}]
+      },
+      {
+        "name": "ADVERSARIAL P11: move_symbol em Python retorna erro explícito (não suportado)",
+        "tool": "move_symbol",
+        "args": {"file": "models.py", "symbol": "ResponseCode", "apply": false},
+        "assert": [{"path": "__error__", "op": "present"}]
+      },
+      {
+        "name": "ADVERSARIAL P10: workspace_symbols lang errada (sem fontes .ts) retorna rápido com aviso",
+        "tool": "workspace_symbols",
+        "args": {"query": "ResponseModel", "lang": "typescript"},
+        "assert": [{"path": "count", "op": "==", "value": 0}, {"path": "warning", "op": "present"}]
       }
     ]
   },
@@ -63,6 +99,24 @@
         "args": {"file": "math.ts", "start_line": 3, "end_line": 3, "apply": false},
         "assert": [{"path": "safe", "op": "present"}],
         "xfail": true
+      },
+      {
+        "name": "ADVERSARIAL P8: rename Widget->Gadget (classe já existe) é barrado por colisão",
+        "tool": "rename_symbol",
+        "args": {"file": "widget.ts", "symbol": "Widget", "new_name": "Gadget", "apply": false},
+        "assert": [{"path": "error", "op": "==", "value": "name_collision"}, {"path": "safe", "op": "==", "value": false}]
+      },
+      {
+        "name": "ADVERSARIAL P12: rename para keyword rejeitado",
+        "tool": "rename_symbol",
+        "args": {"file": "widget.ts", "symbol": "Widget", "new_name": "class", "apply": false},
+        "assert": [{"path": "error", "op": "==", "value": "invalid_new_name"}]
+      },
+      {
+        "name": "ADVERSARIAL P12: rename para o mesmo nome é noop",
+        "tool": "rename_symbol",
+        "args": {"file": "widget.ts", "symbol": "Widget", "new_name": "Widget", "apply": false},
+        "assert": [{"path": "mode", "op": "==", "value": "noop"}]
       }
     ]
   },
@@ -137,6 +191,12 @@
         "tool": "move_symbol",
         "args": {"file": "Handler.cs", "symbol": "RefundOutcome", "apply": false},
         "assert": [{"path": "error", "op": "==", "value": "move_no_op"}]
+      },
+      {
+        "name": "validate_build build verde é build_ok:true (não confunde '0 Error(s)' com erro)",
+        "tool": "validate_build",
+        "args": {"lang": "csharp"},
+        "assert": [{"path": "build_ok", "op": "==", "value": true}]
       }
     ]
   }
