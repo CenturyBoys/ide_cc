@@ -6,6 +6,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- **Daemon sem failover + vazamento de zumbi** (issue #2, relatório Dart): quando o daemon morria, o
+  proxy devolvia `ERRO: falha ao ler do daemon` cru (sem recuperação) e o processo morto ficava
+  `<defunct>` (zumbi) sob o proxy. Agora o `forward_call` detecta a conexão quebrada, **respawna o
+  daemon e tenta mais uma vez** antes de errar; o handle do daemon é guardado e **reapado** (`wait()`)
+  no respawn — sem zumbi para o proxy que o subiu.
+
 ## [0.7.0] - 2026-09-20
 
 ### Added

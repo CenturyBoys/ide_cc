@@ -1691,46 +1691,91 @@ fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
     }
 }
 
-// no MCP: encaminha um tools/call ao daemon (sobe o daemon se necessário)
+// Handle do daemon que ESTE processo subiu — mantido para reap (evita zumbi <defunct> quando ele
+// morre: o proxy é o pai, então precisa dar wait() no filho morto).
+#[cfg(unix)]
+static DAEMON_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+
+// Reap do daemon anterior (se morto) e sobe um novo, guardando o handle para reap futuro.
+#[cfg(unix)]
+fn spawn_daemon() {
+    let mut guard = DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(mut old) = guard.take() {
+        let _ = old.kill(); // idempotente se já morto
+        let _ = old.wait(); // reap → sem processo <defunct>
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(child) = std::process::Command::new(exe)
+            .arg("--daemon")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            *guard = Some(child);
+        }
+    }
+}
+
+// Espera o socket do daemon aceitar conexão, até `ms`.
+#[cfg(unix)]
+fn wait_socket(path: &str, ms: u64) {
+    let start = Instant::now();
+    while std::os::unix::net::UnixStream::connect(path).is_err()
+        && start.elapsed() < Duration::from_millis(ms)
+    {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// UMA tentativa de forward: conecta, envia, lê a resposta. Err em qualquer falha de I/O (usado
+// para disparar o failover).
+#[cfg(unix)]
+fn try_forward(path: &str, name: &str, args: &Value) -> Result<Value, String> {
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(path).map_err(|e| format!("connect: {e}"))?;
+    let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
+    writeln!(stream, "{}", serde_json::to_string(&req).unwrap())
+        .map_err(|e| format!("write: {e}"))?;
+    stream.flush().ok();
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    let n = reader
+        .read_line(&mut line)
+        .map_err(|e| format!("read: {e}"))?;
+    if n == 0 {
+        return Err("conexão fechada pelo daemon (EOF)".into());
+    }
+    let v: Value = serde_json::from_str(&line).map_err(|e| format!("parse: {e}"))?;
+    v.get("result")
+        .cloned()
+        .ok_or_else(|| "resposta sem 'result'".into())
+}
+
+// no MCP: encaminha um tools/call ao daemon (sobe se necessário) com FAILOVER — se a conexão
+// quebrar (daemon morto no meio), respawna (reapando o zumbi) e tenta MAIS UMA vez antes de errar.
 #[cfg(unix)]
 fn forward_call(name: &str, args: &Value) -> Value {
     let path = sock_path();
     if std::os::unix::net::UnixStream::connect(&path).is_err() {
-        if let Ok(exe) = std::env::current_exe() {
-            let _ = std::process::Command::new(exe)
-                .arg("--daemon")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-        }
-        let start = Instant::now();
-        while std::os::unix::net::UnixStream::connect(&path).is_err()
-            && start.elapsed() < Duration::from_secs(5)
-        {
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        spawn_daemon();
+        wait_socket(&path, 5000);
     }
-    let err = |m: &str| json!({"content":[{"type":"text","text": format!("ERRO: {m}")}], "isError": true});
-    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&path) else {
-        return err("daemon indisponível");
-    };
-    let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
-    if writeln!(stream, "{}", serde_json::to_string(&req).unwrap()).is_err() {
-        return err("falha ao enviar ao daemon");
-    }
-    let _ = stream.flush();
-    let mut reader = std::io::BufReader::new(stream);
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_ok() {
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            return v
-                .get("result")
-                .cloned()
-                .unwrap_or_else(|| err("resposta vazia do daemon"));
+    match try_forward(&path, name, args) {
+        Ok(v) => v,
+        Err(_) => {
+            // daemon indisponível/morto → failover: respawna e tenta 1x
+            spawn_daemon();
+            wait_socket(&path, 8000);
+            match try_forward(&path, name, args) {
+                Ok(v) => v,
+                Err(e) => json!({
+                    "content": [{"type":"text","text": format!("ERRO: daemon indisponível após failover: {e}")}],
+                    "isError": true
+                }),
+            }
         }
     }
-    err("falha ao ler do daemon")
 }
 
 fn main() {
