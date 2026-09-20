@@ -49,6 +49,28 @@ exige `smoke.ok==true`. Bom como validação pré-release local.
 
 `xfail` = bug conhecido/ambiental: se falhar é XFAIL (não quebra a suíte); se passar é XPASS (avisa).
 
+## Matriz de capacidade por linguagem
+
+O que cada backend suporta hoje (validado pelos casos e2e; o não-suportado retorna erro **explícito**,
+não silencioso). `?` = ainda não coberto por caso e2e.
+
+| Operação | TS (tsgo/vtsls) | Python (basedpyright) | Dart | Rust (rust-analyzer) | C# (csharp-ls) |
+|---|---|---|---|---|---|
+| find_references | ✅ | ✅ | ✅ | ✅ | ✅ |
+| find_symbol (`Classe/metodo`) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| document_symbols | ✅ | ✅ | ✅ | ✅ | ✅ (`record`→`Record`) |
+| workspace_symbols | ✅ | ✅ | ✅ | ? | ✅ |
+| call_hierarchy | ✅ | ✅ | ✅ | ✅ | ✅ |
+| rename_symbol (+ colisão) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| extract_function | ✅ (vtsls) | ❌ `unsupported` | ? | ? | ✅ |
+| move_symbol (→ novo arquivo) | ✅ (vtsls) | ❌ `unsupported` | ? | ? | ⚠️ `move_no_op` (csharp-ls não cria arquivo) |
+| validate_build | via `TS_CHECK_CMD` | ✅ basedpyright | ✅ dart analyze | ✅ cargo check | ✅ dotnet build |
+
+Regras de segurança **transversais** (independentes de linguagem, cobertas por casos adversariais):
+`rename` barra colisão de escopo (mesmo com diagnósticos desligados), valida `new_name`
+(keyword/inválido → rejeita; `new==old` → noop); `move` que não cria arquivo → `move_no_op`;
+`workspace_symbols` sem fontes da lang → retorno rápido; `validate_build` não confunde `"0 Error(s)"`.
+
 ## CI
 
 `.github/workflows/e2e.yml` instala os 5 language servers e roda a suíte a cada push/PR.

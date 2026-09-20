@@ -103,3 +103,18 @@ casos e2e — o não-suportado precisa de erro explícito. Vira também document
 > Toda correção de bug de segurança/correção entra com **dois** testes: um que mostra a operação
 > boa passando **e** um adversarial que mostra a operação ruim sendo **barrada**. Sem o adversarial,
 > o PR está incompleto — porque é o adversarial que detecta a rede desligada.
+
+## 7. Status (implementado)
+
+- [x] **4.1 Casos negativos** — colisão, keyword, noop, extract/move unsupported, move_no_op, build
+  verde (em `mcp/e2e/cases.json`).
+- [x] **4.2 Matriz de configuração** — fixtures `python` (`typeCheckingMode=off`) e `python-basic`
+  (`basic`): a colisão de rename é barrada nas DUAS → a rede não depende de diagnósticos.
+- [x] **4.3 Canary** — o fixture `python` com `off` é o canário: fica vermelho se o rename voltar a
+  depender só do `net_delta`.
+- [x] **4.4 Matriz de capacidade por linguagem** — tabela versionada em `mcp/e2e/README.md`,
+  validada pelos casos (não-suportado → erro explícito).
+- [x] **Correções** P8, P9, P10, P11, P12 + `validate_build` C# + `record`→`Record` (v0.7.2).
+
+Cobertura atual: **17 testes unitários + 28 casos e2e** (5 language servers reais no CI) + modo
+`--real`. Todo verde.
