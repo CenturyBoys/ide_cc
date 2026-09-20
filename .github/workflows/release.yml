@@ -25,6 +25,8 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-latest # ARM runner cross-compila p/ x86_64 (evita o escasso macos-13)
             target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,12 +39,21 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
       - name: build
         run: cargo build --release --locked --target ${{ matrix.target }} --manifest-path mcp/Cargo.toml
-      - name: package
+      - name: package (unix)
+        if: runner.os != 'Windows'
         run: |
           bin="mcp/target/${{ matrix.target }}/release/code-intel-mcp"
           tar -czf "code-intel-mcp-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" code-intel-mcp
+      - name: package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "mcp/target/${{ matrix.target }}/release/code-intel-mcp.exe"
+          Compress-Archive -Path $bin -DestinationPath "code-intel-mcp-${{ matrix.target }}.zip" -Force
       - name: publish to release
         uses: softprops/action-gh-release@v2
         with:
-          files: code-intel-mcp-${{ matrix.target }}.tar.gz
+          files: |
+            code-intel-mcp-${{ matrix.target }}.tar.gz
+            code-intel-mcp-${{ matrix.target }}.zip
           generate_release_notes: true
