@@ -142,6 +142,14 @@ Cache entre sessões: adicione `"CODE_INTEL_DAEMON": "1"` ao `env`.
 Num projeto novo, rode `doctor` uma vez (checa o setup; `fix=true` corrige). Depois é natural:
 > *"quantas referências a classe `Widget` tem?"* · *"renomeie a classe `Widget` para `Gadget`"*
 
+> **Importante — o instalador NÃO configura o workspace por projeto.** Isso é papel do `doctor`,
+> rodado **dentro de cada projeto**. Crítico em **Python**: sem `[tool.basedpyright]`/
+> `pyrightconfig.json`, o basedpyright cai no modo *openFilesOnly* e o `find_references` volta
+> **incompleto EM SILÊNCIO**. O `doctor fix=true` cria a config e, se achar um virtualenv local
+> (`.venv`/`venv`/`env` — cobre **uv** e venv nativo), preenche o `venvPath`. **Pegadinha do
+> poetry:** por padrão o poetry cria o venv *fora* do projeto, então ele não é detectado — use
+> `poetry config virtualenvs.in-project true` ou adicione `venvPath` manualmente.
+
 O agente usa as ferramentas semânticas (a skill [`semantic-refactor`](.claude/skills/semantic-refactor/SKILL.md)
 o orienta a preferir isso ao grep/sed). Você decide **o quê**; a ferramenta garante a precisão mecânica.
 

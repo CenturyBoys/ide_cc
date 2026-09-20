@@ -81,6 +81,15 @@ EOF
   echo; echo ">> .mcp.json escrito em $(pwd)/.mcp.json"
 fi
 
+# 4b. IMPORTANTE: o install NÃO configura o workspace por projeto. Isso é feito pelo `doctor`,
+#     rodado DENTRO de cada projeto. Crítico em Python: sem [tool.basedpyright]/pyrightconfig.json
+#     o basedpyright entra em modo "openFilesOnly" e o find_references sai INCOMPLETO EM SILÊNCIO.
+echo
+echo ">> ATENÇÃO — setup por projeto (o install não faz isso):"
+echo "   rode a ferramenta 'doctor' (fix=true) DENTRO de cada projeto para configurar o workspace."
+echo "   Python é crítico: sem a config, find_references retorna INCOMPLETO em silêncio."
+echo "   No Claude Code, peça: \"rode o doctor com fix\" — ou doctor(project=<repo>, fix=true)."
+
 # 5. PATH + próximos passos
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
