@@ -6,6 +6,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-20
+
 ### Added
 - **Suíte e2e** (`mcp/e2e/`, job CI dedicado): roda as ferramentas REAIS contra os 5 language
   servers REAIS sobre fixtures que reproduzem cada armadilha dos relatórios de campo (decorator,
@@ -194,7 +196,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...v0.5.0
