@@ -94,6 +94,41 @@ fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64),
     Err(format!("símbolo '{symbol}' não achado em {abs_file}"))
 }
 
+// Varre `lines` a partir de `start` (0-based) até `max` linhas à frente procurando o token
+// `symbol`. Pula decorators (@...) e trivia à esquerda que alguns language servers (basedpyright)
+// incluem no range de símbolos decorados — reportando a posição no `@dataclass`/`@classmethod` em
+// vez do identificador. Retorna (linha0, col0) do identificador.
+fn scan_ident(lines: &[&str], symbol: &str, start: usize, max: usize) -> Option<(u64, u64)> {
+    let end = (start + max).min(lines.len());
+    for (off, row) in lines.get(start..end)?.iter().enumerate() {
+        if let Some(c) = row.find(symbol) {
+            return Some(((start + off) as u64, c as u64));
+        }
+    }
+    None
+}
+
+// Igual a scan_ident, mas lendo o arquivo do disco. Usado na resolução implícita de posição.
+fn locate_ident_from(
+    abs_file: &str,
+    symbol: &str,
+    start_line: u64,
+    max: usize,
+) -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string(abs_file).ok()?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    scan_ident(&lines, symbol, start_line as usize, max)
+}
+
+// Janela de varredura à frente (cobre decorators empilhados) ao refinar posição p/ o identificador.
+const IDENT_SCAN_LINES: usize = 16;
+
+// Refina (l,c) de um símbolo achatado para o token do identificador (pula decorators). Fallback (l,c).
+fn refine_at(lines: &[&str], name_path: &str, l: u64, c: u64) -> (u64, u64) {
+    let ident = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
+    scan_ident(lines, ident, l as usize, IDENT_SCAN_LINES).unwrap_or((l, c))
+}
+
 fn rel(root: &str, uri: &str) -> String {
     let p = uri_to_path(uri);
     p.strip_prefix(root)
@@ -272,10 +307,12 @@ fn resolve_pos(
                     }
                 });
             if let Some((_, _, l, c)) = hit {
-                // O documentSymbol às vezes aponta pro início da declaração (ex.: 'export'),
-                // não pro identificador. Refina a coluna localizando o nome NA linha resolvida.
+                // O documentSymbol às vezes aponta pro início da declaração — em símbolos DECORADOS
+                // (basedpyright) isso é a linha do @decorator, não o identificador. Refina varrendo
+                // pra frente até o token do nome (pula decorators); senão find_references pergunta
+                // em cima do '@' e retorna 0 refs em silêncio (P1).
                 let last = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
-                if let Ok((rl, rc)) = locate(abs, last, Some(l + 1)) {
+                if let Some((rl, rc)) = locate_ident_from(abs, last, *l, IDENT_SCAN_LINES) {
                     return Ok((rl, rc));
                 }
                 return Ok((*l, *c));
@@ -895,9 +932,15 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
+    // Alinha o `at` ao token do identificador (pula decorators), como o workspace_symbols já faz.
+    let txt = std::fs::read_to_string(&abs).unwrap_or_default();
+    let flines: Vec<&str> = txt.split('\n').collect();
     let list: Vec<Value> = flat
         .into_iter()
-        .map(|(fp, k, l, c)| json!({"name_path": fp, "kind": kind_name(k), "at": format!("{}:{}", l + 1, c + 1)}))
+        .map(|(fp, k, l, c)| {
+            let (rl, rc) = refine_at(&flines, &fp, l, c);
+            json!({"name_path": fp, "kind": kind_name(k), "at": format!("{}:{}", rl + 1, rc + 1)})
+        })
         .collect();
     Ok(json!({"file": file, "count": list.len(), "symbols": list}))
 }
@@ -913,10 +956,15 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
+    let txt = std::fs::read_to_string(&abs).unwrap_or_default();
+    let flines: Vec<&str> = txt.split('\n').collect();
     let matches: Vec<Value> = flat
         .iter()
         .filter(|(fp, ..)| name_path_matches(fp, name_path))
-        .map(|(fp, k, l, c)| json!({"name_path": fp, "kind": kind_name(*k), "at": format!("{}:{}", l + 1, c + 1)}))
+        .map(|(fp, k, l, c)| {
+            let (rl, rc) = refine_at(&flines, fp, *l, *c);
+            json!({"name_path": fp, "kind": kind_name(*k), "at": format!("{}:{}", rl + 1, rc + 1)})
+        })
         .collect();
     Ok(json!({"query": name_path, "count": matches.len(), "matches": matches}))
 }
@@ -1591,6 +1639,39 @@ mod tests {
 
         let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
         assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    // Regressão do P1 (relatório pachamama, Python): basedpyright reporta símbolos DECORADOS na
+    // linha do @decorator, não do identificador. A varredura pra frente deve achar o nome.
+    #[test]
+    fn scan_ident_skips_decorator_class() {
+        let src =
+            "x = 1\n@dataclass(slots=True, frozen=True)\nclass ResponseModel(Kobject):\n    pass\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        // símbolo reportado na linha do decorator (idx 1) -> identificador na idx 2, col 6
+        assert_eq!(scan_ident(&lines, "ResponseModel", 1, 16), Some((2, 6)));
+    }
+
+    #[test]
+    fn scan_ident_skips_stacked_decorators_method() {
+        let src = "class C:\n    @classmethod\n    @wraps(f)\n    def from_exception(cls):\n        ...\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        // reportado no @classmethod (idx 1) -> def na idx 3, col 8
+        assert_eq!(scan_ident(&lines, "from_exception", 1, 16), Some((3, 8)));
+    }
+
+    #[test]
+    fn scan_ident_no_decorator_same_line() {
+        let src = "class ResponseCode(IntEnum):\n    A = 1\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        assert_eq!(scan_ident(&lines, "ResponseCode", 0, 16), Some((0, 6)));
+    }
+
+    #[test]
+    fn scan_ident_not_found_returns_none() {
+        let src = "def foo():\n    pass\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        assert_eq!(scan_ident(&lines, "Bar", 0, 16), None);
     }
 
     // Garantia cross-linguagem (relatório viva-bff, TypeScript/tsgo): nomes crus, sem assinatura,
