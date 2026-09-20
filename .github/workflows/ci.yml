@@ -13,7 +13,7 @@ jobs:
       run:
         working-directory: mcp
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,3 +26,5 @@ jobs:
         run: cargo clippy --release || true
       - name: build (release)
         run: cargo build --release
+      - name: test
+        run: cargo test --release

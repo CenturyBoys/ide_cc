@@ -48,7 +48,15 @@ check csharp-ls               "dotnet tool install --global csharp-ls"
 if [ "${INSTALL_LSP:-0}" = "1" ]; then
   echo; echo ">> instalando language servers (INSTALL_LSP=1)..."
   command -v npm    >/dev/null 2>&1 && npm i -g @typescript/native-preview @vtsls/language-server >/dev/null 2>&1 && echo "  [ok] tsgo + vtsls (npm)"
-  command -v pip    >/dev/null 2>&1 && pip install -q basedpyright >/dev/null 2>&1 && echo "  [ok] basedpyright (pip)"
+  # Python/basedpyright: tenta uv -> pipx -> pip -> pip3 -> python3 -m pip -> npm (o relatório
+  # pachamama caiu aqui: só 'pip' era testado, mas o ambiente usava uv → backend nunca instalado).
+  if   command -v uv      >/dev/null 2>&1; then uv tool install basedpyright   >/dev/null 2>&1 && echo "  [ok] basedpyright (uv)"           || echo "  [falha] basedpyright (uv)"
+  elif command -v pipx    >/dev/null 2>&1; then pipx install basedpyright      >/dev/null 2>&1 && echo "  [ok] basedpyright (pipx)"         || echo "  [falha] basedpyright (pipx)"
+  elif command -v pip     >/dev/null 2>&1; then pip install -q basedpyright    >/dev/null 2>&1 && echo "  [ok] basedpyright (pip)"          || echo "  [falha] basedpyright (pip)"
+  elif command -v pip3    >/dev/null 2>&1; then pip3 install -q basedpyright   >/dev/null 2>&1 && echo "  [ok] basedpyright (pip3)"         || echo "  [falha] basedpyright (pip3)"
+  elif command -v python3 >/dev/null 2>&1; then python3 -m pip install -q basedpyright >/dev/null 2>&1 && echo "  [ok] basedpyright (python3 -m pip)" || echo "  [falha] basedpyright (python3 -m pip)"
+  elif command -v npm     >/dev/null 2>&1; then npm i -g basedpyright         >/dev/null 2>&1 && echo "  [ok] basedpyright (npm)"          || echo "  [falha] basedpyright (npm)"
+  else echo "  [falta] basedpyright — instale manualmente: uv tool install basedpyright"; fi
   command -v rustup >/dev/null 2>&1 && rustup component add rust-analyzer >/dev/null 2>&1 && echo "  [ok] rust-analyzer (rustup)"
   command -v dotnet >/dev/null 2>&1 && dotnet tool install --global csharp-ls >/dev/null 2>&1 && echo "  [ok] csharp-ls (dotnet)"
   echo "  (Dart: instale o SDK manualmente se precisar)"
@@ -80,6 +88,15 @@ if [ "${WRITE_MCP:-0}" = "1" ]; then
 EOF
   echo; echo ">> .mcp.json escrito em $(pwd)/.mcp.json"
 fi
+
+# 4b. IMPORTANTE: o install NÃO configura o workspace por projeto. Isso é feito pelo `doctor`,
+#     rodado DENTRO de cada projeto. Crítico em Python: sem [tool.basedpyright]/pyrightconfig.json
+#     o basedpyright entra em modo "openFilesOnly" e o find_references sai INCOMPLETO EM SILÊNCIO.
+echo
+echo ">> ATENÇÃO — setup por projeto (o install não faz isso):"
+echo "   rode a ferramenta 'doctor' (fix=true) DENTRO de cada projeto para configurar o workspace."
+echo "   Python é crítico: sem a config, find_references retorna INCOMPLETO em silêncio."
+echo "   No Claude Code, peça: \"rode o doctor com fix\" — ou doctor(project=<repo>, fix=true)."
 
 # 5. PATH + próximos passos
 case ":$PATH:" in

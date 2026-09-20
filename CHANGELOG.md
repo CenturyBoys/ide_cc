@@ -6,6 +6,67 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-20
+
+### Added
+- **`doctor smoke=true`** (P2): teste END-TO-END por linguagem — descobre um símbolo referenciável,
+  roda um `find_references` real e exige `count>0 && stable`; senão reporta `index_not_ready`/
+  `resolved_zero` acionável. Pega o que os checks estáticos (binário+config) não veem (posição,
+  warmup, escala). Sem `smoke`, o `hint` do doctor deixa claro que foi só checagem estática.
+- **`find_references summary=true`** (P7): saída resumida `{count, files, by_file}` sem cada
+  `path:linha:col` — evita estourar o limite de tokens do cliente em símbolos muito usados.
+- **`CODE_INTEL_WS_TIMEOUT_MS`** (P5): timeout por request do `workspace_symbols` (default 10s). No
+  cold index ele agora **reintenta** dentro do budget (`CODE_INTEL_WARMUP_MS`) e devolve
+  `index_not_ready` acionável em vez de timeout SECO.
+- **`CODE_INTEL_WARMUP_MS`** (P3): teto de warmup do `find_references`/rename configurável (default
+  60000ms) para repos grandes em cold start. O aviso `index_not_ready` agora é **acionável** — sugere
+  ligar `CODE_INTEL_DAEMON=1` (sem daemon o warmup reinicia a cada chamada) e/ou esticar o teto.
+
+### Fixed
+- **`workspace_symbols` silenciosamente quebrado fora de TS/Python** (relatório Dart): só roteava
+  `python→basedpyright`; **todo o resto caía no tsgo**, então `dart`/`rust`/`csharp` consultavam o
+  servidor de TypeScript → `count:0` em silêncio. Agora roteia por linguagem para os 5 backends e
+  **erra alto** em `lang` desconhecida (em vez de retornar vazio). Descrição/param `lang` atualizados.
+  Coberto por teste.
+- **`doctor` — `hint` não insiste mais em `fix=true` quando `problems: 0`** (relatório Dart): reporta
+  "nenhum problema encontrado". (O check do `.dart_tool/package_config.json` já existia; o
+  `smoke=true` agora também cobre Dart end-to-end.)
+- **`INSTALL_LSP=1` não instalava o basedpyright** (P4): só testava `pip`. Agora tenta
+  `uv → pipx → pip → pip3 → python3 -m pip → npm` (`install.sh` e `install.ps1`) — o relatório
+  pachamama usava `uv` e ficava sem backend Python, caindo direto em `index_not_ready`.
+
+### Changed
+- **Descrição do `find_references` agnóstica de linguagem** (P6): não diz mais "via tsgo"; lista o
+  backend por linguagem (tsgo/basedpyright/rust-analyzer/csharp-ls/dart).
+- **Símbolos decorados resolviam no `@decorator`, não no identificador → `find_references` dava
+  `count:0` em silêncio** (P1, relatório pachamama/Python). O basedpyright reporta a posição de uma
+  classe/método decorado na linha do `@dataclass`/`@classmethod`; a resolução implícita de posição
+  perguntava `textDocument/references` em cima do `@` e recebia zero. Agora a refinação **varre pra
+  frente** (até 16 linhas, cobrindo decorators empilhados) até o token do identificador — em
+  `resolve_pos` (afeta find_references/rename/move/call_hierarchy sem `line`) e no `at` de
+  `document_symbols`/`find_symbol` (agora alinhado ao identificador, como o `workspace_symbols`).
+- **`find_symbol`/`resolve_pos` — precisão do name_path composto**: uma query `Classe/metodo` não
+  casa mais um método homônimo de OUTRA classe (o fallback por último segmento agora só vale quando
+  a query não qualifica a classe). Inofensivo em arquivo de 1 classe (por isso o TS/viva-bff passava),
+  mas evita over-match em arquivos com várias classes. Coberto por teste (cenário viva-bff).
+- **`find_symbol` não resolvia métodos em C#** (`count: 0` para `kind: Method`, embora `Class`/`Field`
+  funcionassem). Causa: o `csharp-ls` anexa a assinatura ao nome do método no `documentSymbol`
+  (ex.: `HandleAsync(string x, Guid y)`), e o casamento por `name_path` comparava contra o nome cru.
+  Agora o nome é normalizado (descarta a assinatura antes do `(`) tanto no `find_symbol` quanto no
+  `resolve_pos` — então rename/find_references/call_hierarchy também resolvem métodos C# sem `line`
+  explícito. Idempotente para TS/Rust/etc. Coberto por testes unitários.
+
+### Changed
+- **Setup Python (docs+install)**: `install.sh`/`install.ps1` passam a avisar, ao final, que o
+  instalador **não** configura o workspace por projeto — é preciso rodar `doctor(fix=true)` dentro
+  de cada projeto (crítico em Python: sem a config, `find_references` sai incompleto em silêncio).
+  README (EN+PT) documenta o mesmo, com a cobertura de venv do `doctor` (`.venv`/`venv`/`env` →
+  cobre uv e venv nativo) e a pegadinha do poetry (venv fora do projeto por padrão → não detectado).
+- **CI**: bump das GitHub Actions para runtime Node 24 — `actions/checkout@v4→v5` (ci + release) e
+  `softprops/action-gh-release@v2→v3`, resolvendo o aviso de deprecação do Node 20.
+- **CI**: passa a rodar `cargo test --release` (step bloqueante) — guarda os testes unitários de
+  regressão (ex.: o casamento de `name_path` para métodos C#).
+
 ## [0.6.0] - 2026-09-20
 
 ### Added
@@ -97,7 +158,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.4.0...v0.4.1

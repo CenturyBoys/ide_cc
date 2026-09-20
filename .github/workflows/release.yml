@@ -28,7 +28,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -51,7 +51,7 @@ jobs:
           $bin = "mcp/target/${{ matrix.target }}/release/code-intel-mcp.exe"
           Compress-Archive -Path $bin -DestinationPath "code-intel-mcp-${{ matrix.target }}.zip" -Force
       - name: publish to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             code-intel-mcp-${{ matrix.target }}.tar.gz

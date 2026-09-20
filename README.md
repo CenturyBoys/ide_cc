@@ -175,6 +175,15 @@ Cross-session cache: add `"CODE_INTEL_DAEMON": "1"` to `env`.
 On a new project, run `doctor` once (checks setup; `fix=true` repairs it). After that it's natural:
 > *"how many references does the class `Widget` have?"* · *"rename the class `Widget` to `Gadget`"*
 
+> **Important — the installer does not configure the per-project workspace.** That's what `doctor`
+> does, run **inside each project**. This matters most in **Python**: without a
+> `[tool.basedpyright]`/`pyrightconfig.json`, basedpyright falls back to *openFilesOnly* mode and
+> `find_references` comes back **silently incomplete**. `doctor fix=true` writes the config and, if
+> it finds a local virtualenv (`.venv`/`venv`/`env` — this covers **uv** and native venvs), wires
+> up `venvPath`. **Poetry caveat:** by default Poetry creates the venv *outside* the project, so it
+> isn't auto-detected — either set `poetry config virtualenvs.in-project true` or add `venvPath`
+> manually.
+
 The agent uses the semantic tools (the [`semantic-refactor`](.claude/skills/semantic-refactor/SKILL.md)
 skill nudges it to prefer these over grep/sed). You decide **what**; the tool guarantees the
 mechanical precision.

@@ -94,6 +94,41 @@ fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64),
     Err(format!("símbolo '{symbol}' não achado em {abs_file}"))
 }
 
+// Varre `lines` a partir de `start` (0-based) até `max` linhas à frente procurando o token
+// `symbol`. Pula decorators (@...) e trivia à esquerda que alguns language servers (basedpyright)
+// incluem no range de símbolos decorados — reportando a posição no `@dataclass`/`@classmethod` em
+// vez do identificador. Retorna (linha0, col0) do identificador.
+fn scan_ident(lines: &[&str], symbol: &str, start: usize, max: usize) -> Option<(u64, u64)> {
+    let end = (start + max).min(lines.len());
+    for (off, row) in lines.get(start..end)?.iter().enumerate() {
+        if let Some(c) = row.find(symbol) {
+            return Some(((start + off) as u64, c as u64));
+        }
+    }
+    None
+}
+
+// Igual a scan_ident, mas lendo o arquivo do disco. Usado na resolução implícita de posição.
+fn locate_ident_from(
+    abs_file: &str,
+    symbol: &str,
+    start_line: u64,
+    max: usize,
+) -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string(abs_file).ok()?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    scan_ident(&lines, symbol, start_line as usize, max)
+}
+
+// Janela de varredura à frente (cobre decorators empilhados) ao refinar posição p/ o identificador.
+const IDENT_SCAN_LINES: usize = 16;
+
+// Refina (l,c) de um símbolo achatado para o token do identificador (pula decorators). Fallback (l,c).
+fn refine_at(lines: &[&str], name_path: &str, l: u64, c: u64) -> (u64, u64) {
+    let ident = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
+    scan_ident(lines, ident, l as usize, IDENT_SCAN_LINES).unwrap_or((l, c))
+}
+
 fn rel(root: &str, uri: &str) -> String {
     let p = uri_to_path(uri);
     p.strip_prefix(root)
@@ -103,6 +138,23 @@ fn rel(root: &str, uri: &str) -> String {
 
 // GATE DE WARMUP: repete find_references até a contagem estabilizar (N iguais seguidas).
 // Retorna (locations, stable, warmup_ms, polls). `stable=false` => resultado NÃO confiável.
+// Aviso acionável quando o índice não estabiliza: sugere daemon (se desligado) e/ou esticar o teto.
+fn index_not_ready_hint() -> String {
+    let base = "index_not_ready: índice ainda indexando; NÃO use para rename/delete";
+    #[cfg(unix)]
+    {
+        if std::env::var("CODE_INTEL_DAEMON").is_ok() {
+            format!("{base} — aumente CODE_INTEL_WARMUP_MS se persistir")
+        } else {
+            format!("{base} — ligue CODE_INTEL_DAEMON=1 (sem daemon o warmup reinicia a cada chamada) e/ou aumente CODE_INTEL_WARMUP_MS")
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{base} — aumente CODE_INTEL_WARMUP_MS")
+    }
+}
+
 fn warmup_references(
     client: &LspClient,
     uri: &str,
@@ -114,8 +166,13 @@ fn warmup_references(
     let mut stable_hits = 0u32;
     let mut polls = 0u32;
     let mut refs: Vec<Value> = vec![];
-    // 60s: rust-analyzer roda cargo metadata + check no cold start (~30s no fixture medido).
-    while start.elapsed().as_millis() < 60_000 {
+    // Teto de warmup. Default 60s (rust-analyzer roda cargo metadata + check no cold start, ~30s
+    // no fixture medido). Repos grandes em cold start podem precisar de mais — CODE_INTEL_WARMUP_MS.
+    let budget_ms: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    while start.elapsed().as_millis() < budget_ms {
         polls += 1;
         // rust-analyzer LANÇA erro ('No references found at position') enquanto indexa;
         // tratamos como "ainda não pronto" e re-tentamos, em vez de propagar.
@@ -203,6 +260,33 @@ fn flatten_symbols(symbols: &[Value], prefix: &str, out: &mut Vec<(String, u64, 
     }
 }
 
+// Alguns language servers (notadamente csharp-ls) anexam a assinatura ao nome do método no
+// documentSymbol (ex.: "HandleAsync(string x, int y)"). Para casar por name_path, comparamos o
+// nome "base" (antes do '('). Idempotente para nomes sem assinatura (TS/Rust/etc.).
+fn base_name(seg: &str) -> &str {
+    match seg.find('(') {
+        Some(i) => seg[..i].trim_end(),
+        None => seg,
+    }
+}
+
+// Normaliza um name_path inteiro removendo a assinatura de cada segmento.
+fn strip_sigs(path: &str) -> String {
+    path.split('/').map(base_name).collect::<Vec<_>>().join("/")
+}
+
+// Casa um name_path achatado `fp` (possivelmente com assinatura de método, ex.: csharp-ls)
+// contra a `query` do usuário (sem assinatura). Normaliza `fp` antes de comparar (então métodos
+// C# resolvem). Critérios: igualdade exata, sufixo "/query" ou — SÓ quando a query não qualifica
+// a classe (sem '/') — último segmento igual. Assim uma query composta "A/foo" não casa "B/foo".
+fn name_path_matches(fp: &str, query: &str) -> bool {
+    let nfp = strip_sigs(fp);
+    if nfp == query || nfp.ends_with(&format!("/{query}")) {
+        return true;
+    }
+    !query.contains('/') && nfp.rsplit('/').next() == Some(base_name(query))
+}
+
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
     client.ensure_open(abs)?;
     let res = client.request(
@@ -225,21 +309,32 @@ fn resolve_pos(
         if let Ok(syms) = document_symbols(client, abs) {
             let mut flat = vec![];
             flatten_symbols(&syms, "", &mut flat);
-            let last = name_path.rsplit('/').next().unwrap_or(name_path);
+            let last = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
             let suffix = format!("/{name_path}");
+            // Casa contra o name_path normalizado (sem assinatura), cobrindo métodos do csharp-ls.
             let hit = flat
                 .iter()
-                .find(|(fp, ..)| fp == name_path)
-                .or_else(|| flat.iter().find(|(fp, ..)| fp.ends_with(&suffix)))
+                .find(|(fp, ..)| strip_sigs(fp) == name_path)
                 .or_else(|| {
                     flat.iter()
-                        .find(|(fp, ..)| fp.rsplit('/').next() == Some(last))
+                        .find(|(fp, ..)| strip_sigs(fp).ends_with(&suffix))
+                })
+                .or_else(|| {
+                    // fallback por último segmento só quando a query não qualifica a classe
+                    if name_path.contains('/') {
+                        None
+                    } else {
+                        flat.iter()
+                            .find(|(fp, ..)| strip_sigs(fp).rsplit('/').next() == Some(last))
+                    }
                 });
             if let Some((_, _, l, c)) = hit {
-                // O documentSymbol às vezes aponta pro início da declaração (ex.: 'export'),
-                // não pro identificador. Refina a coluna localizando o nome NA linha resolvida.
-                let last = name_path.rsplit('/').next().unwrap_or(name_path);
-                if let Ok((rl, rc)) = locate(abs, last, Some(l + 1)) {
+                // O documentSymbol às vezes aponta pro início da declaração — em símbolos DECORADOS
+                // (basedpyright) isso é a linha do @decorator, não o identificador. Refina varrendo
+                // pra frente até o token do nome (pula decorators); senão find_references pergunta
+                // em cima do '@' e retorna 0 refs em silêncio (P1).
+                let last = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
+                if let Some((rl, rc)) = locate_ident_from(abs, last, *l, IDENT_SCAN_LINES) {
                     return Ok((rl, rc));
                 }
                 return Ok((*l, *c));
@@ -624,6 +719,31 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
     let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c)?;
+    let warning = if stable {
+        Value::Null
+    } else {
+        json!(index_not_ready_hint())
+    };
+    // P7: modo resumido — só contagem + arquivos distintos (+ por-arquivo). Evita estourar o limite
+    // de tokens do cliente em símbolos muito usados (resultado grande vira dezenas de KB).
+    if a["summary"].as_bool().unwrap_or(false) {
+        let mut by_file: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        for r in &refs {
+            let u = r["uri"].as_str().unwrap_or("");
+            *by_file.entry(rel(client.root(), u)).or_insert(0) += 1;
+        }
+        return Ok(json!({
+            "symbol": symbol,
+            "count": refs.len(),
+            "files": by_file.len(),
+            "stable": stable,
+            "warning": warning,
+            "warmup_ms": warmup_ms,
+            "polls": polls,
+            "by_file": by_file,
+        }));
+    }
     let mut locs: Vec<String> = refs
         .iter()
         .map(|r| {
@@ -638,7 +758,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
         "symbol": symbol,
         "count": refs.len(),
         "stable": stable,
-        "warning": if stable { Value::Null } else { json!("index_not_ready: contagem AINDA mudando; NÃO use para rename/delete") },
+        "warning": warning,
         "warmup_ms": warmup_ms,
         "polls": polls,
         "references": locs,
@@ -859,9 +979,15 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
+    // Alinha o `at` ao token do identificador (pula decorators), como o workspace_symbols já faz.
+    let txt = std::fs::read_to_string(&abs).unwrap_or_default();
+    let flines: Vec<&str> = txt.split('\n').collect();
     let list: Vec<Value> = flat
         .into_iter()
-        .map(|(fp, k, l, c)| json!({"name_path": fp, "kind": kind_name(k), "at": format!("{}:{}", l + 1, c + 1)}))
+        .map(|(fp, k, l, c)| {
+            let (rl, rc) = refine_at(&flines, &fp, l, c);
+            json!({"name_path": fp, "kind": kind_name(k), "at": format!("{}:{}", rl + 1, rc + 1)})
+        })
         .collect();
     Ok(json!({"file": file, "count": list.len(), "symbols": list}))
 }
@@ -877,27 +1003,68 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
-    let last = name_path.rsplit('/').next().unwrap_or(name_path);
-    let suffix = format!("/{name_path}");
+    let txt = std::fs::read_to_string(&abs).unwrap_or_default();
+    let flines: Vec<&str> = txt.split('\n').collect();
     let matches: Vec<Value> = flat
         .iter()
-        .filter(|(fp, ..)| fp == name_path || fp.ends_with(&suffix) || fp.rsplit('/').next() == Some(last))
-        .map(|(fp, k, l, c)| json!({"name_path": fp, "kind": kind_name(*k), "at": format!("{}:{}", l + 1, c + 1)}))
+        .filter(|(fp, ..)| name_path_matches(fp, name_path))
+        .map(|(fp, k, l, c)| {
+            let (rl, rc) = refine_at(&flines, fp, *l, *c);
+            json!({"name_path": fp, "kind": kind_name(*k), "at": format!("{}:{}", rl + 1, rc + 1)})
+        })
         .collect();
     Ok(json!({"query": name_path, "count": matches.len(), "matches": matches}))
+}
+
+// Backend do workspace_symbols por 'lang' (não há arquivo p/ auto-detectar). ERRA em lang
+// desconhecida em vez de cair silenciosamente no tsgo (o bug do relatório Dart: lang="dart"
+// virava consulta no servidor de TS → count:0 em silêncio).
+fn ws_backend(lang: Option<&str>) -> Result<&'static str, String> {
+    match lang {
+        None | Some("typescript") | Some("ts") | Some("javascript") | Some("js") => Ok("tsgo"),
+        Some("python") | Some("py") => Ok("basedpyright"),
+        Some("dart") => Ok("dart"),
+        Some("rust") | Some("rs") => Ok("rust-analyzer"),
+        Some("csharp") | Some("c#") | Some("cs") => Ok("csharp-ls"),
+        Some(other) => Err(format!(
+            "lang '{other}' não suportado em workspace_symbols; use: typescript|python|dart|rust|csharp"
+        )),
+    }
 }
 
 fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let query = a["query"].as_str().ok_or("faltou 'query'")?;
-    // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts)
-    let backend = if a["lang"].as_str() == Some("python") {
-        "basedpyright"
-    } else {
-        "tsgo"
-    };
+    // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts).
+    let backend = ws_backend(a["lang"].as_str())?;
     let client = srv.client(project, backend)?;
-    let res = client.request("workspace/symbol", json!({"query": query}), 10_000)?;
+    // P5: no cold index o workspace/symbol estourava timeout SECO. Agora reintenta dentro de um
+    // budget (CODE_INTEL_WARMUP_MS, default 60s) e, se não vier, devolve index_not_ready ACIONÁVEL
+    // em vez de erro cru. Timeout por request via CODE_INTEL_WS_TIMEOUT_MS (default 10s).
+    let per_req: u64 = std::env::var("CODE_INTEL_WS_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let budget: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    let start = Instant::now();
+    let res = loop {
+        match client.request("workspace/symbol", json!({"query": query}), per_req) {
+            Ok(r) => break r,
+            Err(e) => {
+                if start.elapsed().as_millis() >= budget {
+                    return Ok(json!({
+                        "query": query, "count": 0, "stable": false,
+                        "warning": index_not_ready_hint(),
+                        "detail": format!("workspace/symbol não respondeu em {budget}ms (cold index): {e}"),
+                    }));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    };
     let root = client.root().to_string();
     let list: Vec<Value> = res
         .as_array()
@@ -1011,11 +1178,131 @@ fn detect_langs(project: &str) -> Vec<&'static str> {
     v
 }
 
+// Acha um arquivo-fonte da linguagem (por extensão), preferindo src/, pulando venv/build/vcs.
+// Busca limitada (budget de entradas) para não varrer repos gigantes.
+fn find_source_file(project: &str, ext: &str) -> Option<String> {
+    fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32) -> Option<String> {
+        let mut subdirs = vec![];
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            if *budget == 0 {
+                return None;
+            }
+            *budget -= 1;
+            let path = e.path();
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if matches!(
+                    name.as_ref(),
+                    ".git"
+                        | ".venv"
+                        | "venv"
+                        | "env"
+                        | "node_modules"
+                        | "target"
+                        | "__pycache__"
+                        | "bin"
+                        | "obj"
+                        | ".dart_tool"
+                        | "dist"
+                        | "build"
+                ) {
+                    continue;
+                }
+                subdirs.push(path);
+            } else if path.extension().map(|x| x == ext).unwrap_or(false) {
+                return path
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|r| r.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        for d in subdirs {
+            if let Some(f) = walk(&d, ext, root, budget) {
+                return Some(f);
+            }
+        }
+        None
+    }
+    let root = Path::new(project);
+    let mut budget = 5000u32;
+    if root.join("src").is_dir() {
+        if let Some(f) = walk(&root.join("src"), ext, root, &mut budget) {
+            return Some(f);
+        }
+    }
+    walk(root, ext, root, &mut budget)
+}
+
+// P2: smoke test END-TO-END — roda um find_references REAL num símbolo descoberto e exige
+// count>0 && stable. Pega o que os checks de binário+config NÃO pegam (posição, warmup, escala).
+fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
+    let ext = match lang {
+        "python" => "py",
+        "typescript" => "ts",
+        "rust" => "rs",
+        "dart" => "dart",
+        "csharp" => "cs",
+        _ => return json!({"ran": false, "reason": "linguagem sem smoke test"}),
+    };
+    let Some(rel_file) = find_source_file(project, ext) else {
+        return json!({"ran": false, "reason": format!("nenhum arquivo .{ext} encontrado")});
+    };
+    let Ok(client) = srv.client(project, nav_backend(&rel_file)) else {
+        return json!({"ran": false, "reason": "falha ao subir o language server"});
+    };
+    let abs = format!("{}/{}", project.trim_end_matches('/'), rel_file);
+    if client.ensure_open(&abs).is_err() {
+        return json!({"ran": false, "reason": "falha ao abrir o arquivo"});
+    }
+    let Ok(syms) = document_symbols(&client, &abs) else {
+        return json!({"ran": false, "reason": "documentSymbol falhou"});
+    };
+    let mut flat = vec![];
+    flatten_symbols(&syms, "", &mut flat);
+    // símbolos referenciáveis: Class(5), Method(6), Interface(11), Function(12), Struct(23)
+    let candidates: Vec<_> = flat
+        .iter()
+        .filter(|(_, k, ..)| matches!(k, 5 | 6 | 11 | 12 | 23))
+        .take(8)
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        return json!({"ran": false, "reason": "nenhum símbolo referenciável no arquivo"});
+    }
+    let uri = path_to_uri(&abs);
+    for (fp, _k, _l, _c) in &candidates {
+        let ident = base_name(fp.rsplit('/').next().unwrap_or(fp));
+        let Ok((rl, rc)) = resolve_pos(&client, &abs, ident, None) else {
+            continue;
+        };
+        let Ok((refs, stable, ms, polls)) = warmup_references(&client, &uri, rl, rc) else {
+            continue;
+        };
+        if !stable {
+            // índice não convergiu no budget — não adianta tentar outros símbolos
+            return json!({"ran": true, "ok": false, "symbol": ident, "file": rel_file,
+                "count": refs.len(), "stable": false, "warmup_ms": ms, "polls": polls,
+                "issue": index_not_ready_hint()});
+        }
+        if !refs.is_empty() {
+            return json!({"ran": true, "ok": true, "symbol": ident, "file": rel_file,
+                "count": refs.len(), "stable": true, "warmup_ms": ms, "polls": polls});
+        }
+        // stable mas 0 refs: segue tentando (índice já quente → próximos são rápidos)
+    }
+    json!({"ran": true, "ok": false, "file": rel_file, "count": 0, "stable": true,
+        "issue": "resolved_zero: nenhum símbolo do arquivo resolveu referências com índice estável — config de workspace provavelmente incompleta (crítico em Python: [tool.basedpyright]/venv) ou arquivo isolado"})
+}
+
 // Verifica (e opcionalmente corrige com fix=true) o setup por linguagem: language server disponível
 // + config de workspace correta (senão as referências saem incompletas — ver docs/LANGUAGE-SETUP.md).
+// Com smoke=true, roda também um find_references REAL end-to-end por linguagem (pega o que os checks
+// estáticos não pegam — P2 do relatório pachamama).
 fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let fix = a["fix"].as_bool().unwrap_or(false);
+    let smoke = a["smoke"].as_bool().unwrap_or(false);
     let p = Path::new(project);
     let langs = detect_langs(project);
     let mut report = vec![];
@@ -1102,11 +1389,21 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
             _ => {}
         }
 
+        // P2: só roda o smoke se binário+config estiverem ok (senão o resultado seria óbvio).
+        let smoke_res = if smoke && available && cfg_ok {
+            doctor_smoke(srv, project, lang)
+        } else if smoke {
+            json!({"ran": false, "reason": "pré-requisito falhou (server/config)"})
+        } else {
+            Value::Null
+        };
+
         report.push(json!({
             "lang": lang, "server": server, "server_bin": server_bin,
             "server_available": available,
             "install": if available { Value::Null } else { json!(install_hint) },
             "workspace_config": {"ok": cfg_ok, "issue": issue, "fix": fix_desc, "applied": applied},
+            "smoke": smoke_res,
         }));
     }
 
@@ -1115,14 +1412,28 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         .filter(|e| {
             !e["server_available"].as_bool().unwrap_or(true)
                 || !e["workspace_config"]["ok"].as_bool().unwrap_or(true)
+                // smoke conta como problema só quando rodou e falhou
+                || (e["smoke"]["ran"].as_bool().unwrap_or(false)
+                    && !e["smoke"]["ok"].as_bool().unwrap_or(true))
         })
         .count();
+    let hint = if problems == 0 && smoke {
+        "nenhum problema encontrado (inclui smoke test end-to-end)"
+    } else if problems == 0 {
+        "nenhum problema na checagem estática; rode com smoke=true p/ o teste end-to-end (find_references real)"
+    } else if !smoke {
+        "checagem ESTÁTICA (binário+config). Rode com smoke=true p/ o teste end-to-end (find_references real) — pega posição/warmup/escala que os checks estáticos não veem."
+    } else if fix {
+        "correções aplicadas onde possível; smoke test end-to-end executado"
+    } else {
+        "smoke test end-to-end executado; rode com fix=true para corrigir configs automaticamente"
+    };
     Ok(json!({
         "project": project,
         "languages_detected": langs,
         "problems": problems,
         "report": report,
-        "hint": if fix { "correções aplicadas onde possível" } else { "rode com fix=true para corrigir as configs automaticamente" },
+        "hint": hint,
     }))
 }
 
@@ -1130,14 +1441,15 @@ fn tools_schema() -> Value {
     json!([
         {
             "name": "find_references",
-            "description": "Encontra TODAS as referências semânticas a um símbolo (via tsgo). Aguarda o índice estabilizar (gate de warmup) e sinaliza se o resultado ainda não é confiável. Use isto em vez de grep para rename/delete.",
+            "description": "Encontra TODAS as referências semânticas a um símbolo (via o language server da linguagem detectada: tsgo p/ TS, basedpyright p/ Python, rust-analyzer, csharp-ls, dart). Aguarda o índice estabilizar (gate de warmup) e sinaliza se o resultado ainda não é confiável. Use isto em vez de grep para rename/delete.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "caminho ABSOLUTO da raiz do projeto"},
                     "file": {"type": "string", "description": "caminho do arquivo RELATIVO ao project"},
                     "symbol": {"type": "string", "description": "nome do símbolo (ex.: 'ZodType')"},
-                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"}
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"},
+                    "summary": {"type": "boolean", "description": "opcional: true = só {count, files, by_file} (sem cada path:linha:col) — evita estourar o limite de tokens em símbolos muito usados"}
                 },
                 "required": ["project", "file", "symbol"]
             }
@@ -1182,12 +1494,12 @@ fn tools_schema() -> Value {
         },
         {
             "name": "workspace_symbols",
-            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Use lang='python' para projetos Python.",
+            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Informe 'lang' conforme o projeto (typescript default, python, dart, rust, csharp) — lang desconhecida ERRA (não retorna vazio em silêncio).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string"}, "query": {"type": "string"},
-                    "lang": {"type": "string", "description": "'python' ou 'typescript' (default)"}
+                    "lang": {"type": "string", "description": "'typescript' (default), 'python', 'dart', 'rust' ou 'csharp'"}
                 },
                 "required": ["project", "query"]
             }
@@ -1239,12 +1551,13 @@ fn tools_schema() -> Value {
         },
         {
             "name": "doctor",
-            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Rode uma vez ao abrir um projeto novo.",
+            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Com smoke=true, roda um find_references REAL end-to-end e exige count>0 && stable (pega posição/warmup/escala que os checks estáticos não veem). Rode uma vez ao abrir um projeto novo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "caminho absoluto da raiz do projeto"},
-                    "fix": {"type": "boolean", "description": "true = aplica as correções possíveis (escreve configs)"}
+                    "fix": {"type": "boolean", "description": "true = aplica as correções possíveis (escreve configs)"},
+                    "smoke": {"type": "boolean", "description": "true = roda um find_references real por linguagem (teste end-to-end); pode demorar no cold start (ligue CODE_INTEL_DAEMON=1)"}
                 },
                 "required": ["project"]
             }
@@ -1515,5 +1828,125 @@ fn main() {
         };
         let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap());
         let _ = out.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_name_strips_method_signature() {
+        // csharp-ls anexa a assinatura ao nome do método
+        assert_eq!(base_name("HandleAsync(string x, int y)"), "HandleAsync");
+        assert_eq!(
+            base_name("AddWalletModule(this IServiceCollection services)"),
+            "AddWalletModule"
+        );
+        // idempotente para nomes sem assinatura (TS/Rust/etc.)
+        assert_eq!(base_name("Reasons"), "Reasons");
+        assert_eq!(
+            base_name("RefundRedemptionHandler"),
+            "RefundRedemptionHandler"
+        );
+    }
+
+    #[test]
+    fn strip_sigs_normalizes_full_path() {
+        assert_eq!(
+            strip_sigs("RefundRedemptionHandler/HandleAsync(string x, Guid y)"),
+            "RefundRedemptionHandler/HandleAsync"
+        );
+        assert_eq!(strip_sigs("Widget/render"), "Widget/render");
+    }
+
+    // Regressão do bug: find_symbol devolvia count 0 para métodos em C# porque o csharp-ls
+    // inclui a assinatura no nome do símbolo (ex.: "HandleAsync(...)").
+    #[test]
+    fn name_path_matches_csharp_method_with_signature() {
+        let fp = "RefundRedemptionHandler/HandleAsync(string publicRef, Guid partnerId)";
+        assert!(name_path_matches(fp, "HandleAsync"));
+        assert!(name_path_matches(fp, "RefundRedemptionHandler/HandleAsync"));
+
+        let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
+        assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    // Regressão do relatório Dart: workspace_symbols roteava lang!=python p/ tsgo em silêncio.
+    #[test]
+    fn ws_backend_routes_all_languages() {
+        assert_eq!(ws_backend(Some("dart")).unwrap(), "dart");
+        assert_eq!(ws_backend(Some("python")).unwrap(), "basedpyright");
+        assert_eq!(ws_backend(Some("rust")).unwrap(), "rust-analyzer");
+        assert_eq!(ws_backend(Some("csharp")).unwrap(), "csharp-ls");
+        assert_eq!(ws_backend(Some("typescript")).unwrap(), "tsgo");
+        assert_eq!(ws_backend(None).unwrap(), "tsgo");
+        // lang desconhecida ERRA (não cai silenciosamente no tsgo)
+        assert!(ws_backend(Some("cobol")).is_err());
+    }
+
+    // Regressão do P1 (relatório pachamama, Python): basedpyright reporta símbolos DECORADOS na
+    // linha do @decorator, não do identificador. A varredura pra frente deve achar o nome.
+    #[test]
+    fn scan_ident_skips_decorator_class() {
+        let src =
+            "x = 1\n@dataclass(slots=True, frozen=True)\nclass ResponseModel(Kobject):\n    pass\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        // símbolo reportado na linha do decorator (idx 1) -> identificador na idx 2, col 6
+        assert_eq!(scan_ident(&lines, "ResponseModel", 1, 16), Some((2, 6)));
+    }
+
+    #[test]
+    fn scan_ident_skips_stacked_decorators_method() {
+        let src = "class C:\n    @classmethod\n    @wraps(f)\n    def from_exception(cls):\n        ...\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        // reportado no @classmethod (idx 1) -> def na idx 3, col 8
+        assert_eq!(scan_ident(&lines, "from_exception", 1, 16), Some((3, 8)));
+    }
+
+    #[test]
+    fn scan_ident_no_decorator_same_line() {
+        let src = "class ResponseCode(IntEnum):\n    A = 1\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        assert_eq!(scan_ident(&lines, "ResponseCode", 0, 16), Some((0, 6)));
+    }
+
+    #[test]
+    fn scan_ident_not_found_returns_none() {
+        let src = "def foo():\n    pass\n";
+        let lines: Vec<&str> = src.split('\n').collect();
+        assert_eq!(scan_ident(&lines, "Bar", 0, 16), None);
+    }
+
+    // Garantia cross-linguagem (relatório viva-bff, TypeScript/tsgo): nomes crus, sem assinatura,
+    // com name_path composto ("Classe/metodo") — o mesmo padrão que sempre funcionou no TS deve
+    // continuar funcionando após a normalização (idempotente), sem regressão.
+    #[test]
+    fn name_path_matches_typescript_composite_path_no_regression() {
+        let fp = "GetBalanceResolver/resolve";
+        assert!(name_path_matches(fp, "GetBalanceResolver/resolve"));
+        assert!(name_path_matches(fp, "resolve"));
+        // classe homônima de método em outro resolver não deve casar quando a classe é especificada
+        assert!(!name_path_matches(
+            "GetProfileResolver/resolve",
+            "GetBalanceResolver/resolve"
+        ));
+    }
+
+    #[test]
+    fn name_path_matches_class_and_field_unaffected() {
+        assert!(name_path_matches(
+            "RefundRedemptionHandler",
+            "RefundRedemptionHandler"
+        ));
+        assert!(name_path_matches(
+            "RefundRedemptionHandler/Reasons",
+            "Reasons"
+        ));
+        // não casa símbolo diferente
+        assert!(!name_path_matches(
+            "RefundRedemptionHandler/HandleAsync(string x)",
+            "ExecuteRefundAsync"
+        ));
     }
 }
