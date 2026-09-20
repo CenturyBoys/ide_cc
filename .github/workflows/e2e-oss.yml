@@ -1,0 +1,79 @@
+name: e2e-oss
+
+# Roda o code-intel-mcp (modo --real) contra projetos OSS GRANDES e reais, um por linguagem.
+# Os repos de campo são privados; estes OSS são reprodutíveis e pegam casos que os fixtures
+# pequenos não têm (ex.: zod/play.ts, símbolo sem refs — que expôs um bug no doctor smoke).
+# Agendado (nightly) + manual (workflow_dispatch), pois clona repos e paga cold-start dos LSPs.
+on:
+  schedule:
+    - cron: "0 5 * * *" # 05:00 UTC diário
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oss:
+    name: e2e --real em OSS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-analyzer
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mcp
+      - name: build code-intel-mcp
+        run: cargo build --release --manifest-path mcp/Cargo.toml
+
+      # language servers (best-effort; cada linguagem é pulada se o LSP faltar)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install tsgo + vtsls
+        continue-on-error: true
+        run: npm i -g @typescript/native-preview @vtsls/language-server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install basedpyright
+        continue-on-error: true
+        run: pip install --user basedpyright
+      - uses: dart-lang/setup-dart@v1
+        continue-on-error: true
+
+      - name: resolve LSP bins
+        run: |
+          {
+            echo "PATH=$HOME/.local/bin:$PATH"
+            echo "RUST_ANALYZER_BIN=$(rustup which rust-analyzer || echo rust-analyzer)"
+            echo "BASEDPYRIGHT_BIN=basedpyright-langserver"
+            echo "TSGO_BIN=tsgo"
+            echo "VTSLS_BIN=vtsls"
+            echo "DART_BIN=dart"
+            echo "CODE_INTEL_WARMUP_MS=240000"
+            echo "CODE_INTEL_E2E_TIMEOUT=420"
+          } >> "$GITHUB_ENV"
+
+      - name: Python OSS (pallets/flask)
+        run: |
+          git clone --depth 1 https://github.com/pallets/flask /tmp/oss-py
+          CODE_INTEL_E2E_REPO=/tmp/oss-py CODE_INTEL_E2E_LANG=python python3 mcp/e2e/run.py --real
+
+      - name: TypeScript OSS (colinhacks/zod)
+        run: |
+          git clone --depth 1 https://github.com/colinhacks/zod /tmp/oss-ts
+          CODE_INTEL_E2E_REPO=/tmp/oss-ts CODE_INTEL_E2E_LANG=typescript python3 mcp/e2e/run.py --real
+
+      - name: Rust OSS (BurntSushi/ripgrep)
+        run: |
+          git clone --depth 1 https://github.com/BurntSushi/ripgrep /tmp/oss-rs
+          (cd /tmp/oss-rs && cargo fetch)
+          CODE_INTEL_E2E_REPO=/tmp/oss-rs CODE_INTEL_E2E_LANG=rust python3 mcp/e2e/run.py --real
+
+      - name: Dart OSS (dart-lang/http)
+        run: |
+          git clone --depth 1 https://github.com/dart-lang/http /tmp/oss-dart
+          (cd /tmp/oss-dart/pkgs/http && dart pub get)
+          CODE_INTEL_E2E_REPO=/tmp/oss-dart/pkgs/http CODE_INTEL_E2E_LANG=dart python3 mcp/e2e/run.py --real

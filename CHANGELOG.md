@@ -6,6 +6,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **Job CI `e2e-oss` (nightly + manual)**: roda o `--real` contra projetos OSS grandes e reais, um
+  por linguagem (flask/Python, zod/TS, ripgrep/Rust, http/Dart) — reprodutível (os repos de campo
+  são privados) e pega casos que os fixtures não têm. Foi rodando o `--real` em OSS que achamos o
+  bug do `doctor smoke` (v0.7.3).
+
 ## [0.7.3] - 2026-09-20
 
 ### Fixed
