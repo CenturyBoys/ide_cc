@@ -1016,15 +1016,27 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(json!({"query": name_path, "count": matches.len(), "matches": matches}))
 }
 
+// Backend do workspace_symbols por 'lang' (não há arquivo p/ auto-detectar). ERRA em lang
+// desconhecida em vez de cair silenciosamente no tsgo (o bug do relatório Dart: lang="dart"
+// virava consulta no servidor de TS → count:0 em silêncio).
+fn ws_backend(lang: Option<&str>) -> Result<&'static str, String> {
+    match lang {
+        None | Some("typescript") | Some("ts") | Some("javascript") | Some("js") => Ok("tsgo"),
+        Some("python") | Some("py") => Ok("basedpyright"),
+        Some("dart") => Ok("dart"),
+        Some("rust") | Some("rs") => Ok("rust-analyzer"),
+        Some("csharp") | Some("c#") | Some("cs") => Ok("csharp-ls"),
+        Some(other) => Err(format!(
+            "lang '{other}' não suportado em workspace_symbols; use: typescript|python|dart|rust|csharp"
+        )),
+    }
+}
+
 fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let query = a["query"].as_str().ok_or("faltou 'query'")?;
-    // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts)
-    let backend = if a["lang"].as_str() == Some("python") {
-        "basedpyright"
-    } else {
-        "tsgo"
-    };
+    // workspace_symbols opera no projeto inteiro (sem arquivo); backend por 'lang' (default ts).
+    let backend = ws_backend(a["lang"].as_str())?;
     let client = srv.client(project, backend)?;
     // P5: no cold index o workspace/symbol estourava timeout SECO. Agora reintenta dentro de um
     // budget (CODE_INTEL_WARMUP_MS, default 60s) e, se não vier, devolve index_not_ready ACIONÁVEL
@@ -1405,7 +1417,11 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
                     && !e["smoke"]["ok"].as_bool().unwrap_or(true))
         })
         .count();
-    let hint = if !smoke {
+    let hint = if problems == 0 && smoke {
+        "nenhum problema encontrado (inclui smoke test end-to-end)"
+    } else if problems == 0 {
+        "nenhum problema na checagem estática; rode com smoke=true p/ o teste end-to-end (find_references real)"
+    } else if !smoke {
         "checagem ESTÁTICA (binário+config). Rode com smoke=true p/ o teste end-to-end (find_references real) — pega posição/warmup/escala que os checks estáticos não veem."
     } else if fix {
         "correções aplicadas onde possível; smoke test end-to-end executado"
@@ -1478,12 +1494,12 @@ fn tools_schema() -> Value {
         },
         {
             "name": "workspace_symbols",
-            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Use lang='python' para projetos Python.",
+            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Informe 'lang' conforme o projeto (typescript default, python, dart, rust, csharp) — lang desconhecida ERRA (não retorna vazio em silêncio).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string"}, "query": {"type": "string"},
-                    "lang": {"type": "string", "description": "'python' ou 'typescript' (default)"}
+                    "lang": {"type": "string", "description": "'typescript' (default), 'python', 'dart', 'rust' ou 'csharp'"}
                 },
                 "required": ["project", "query"]
             }
@@ -1854,6 +1870,19 @@ mod tests {
 
         let fp2 = "WalletModule/AddWalletModule(this IServiceCollection services)";
         assert!(name_path_matches(fp2, "AddWalletModule"));
+    }
+
+    // Regressão do relatório Dart: workspace_symbols roteava lang!=python p/ tsgo em silêncio.
+    #[test]
+    fn ws_backend_routes_all_languages() {
+        assert_eq!(ws_backend(Some("dart")).unwrap(), "dart");
+        assert_eq!(ws_backend(Some("python")).unwrap(), "basedpyright");
+        assert_eq!(ws_backend(Some("rust")).unwrap(), "rust-analyzer");
+        assert_eq!(ws_backend(Some("csharp")).unwrap(), "csharp-ls");
+        assert_eq!(ws_backend(Some("typescript")).unwrap(), "tsgo");
+        assert_eq!(ws_backend(None).unwrap(), "tsgo");
+        // lang desconhecida ERRA (não cai silenciosamente no tsgo)
+        assert!(ws_backend(Some("cobol")).is_err());
     }
 
     // Regressão do P1 (relatório pachamama, Python): basedpyright reporta símbolos DECORADOS na

@@ -21,6 +21,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   ligar `CODE_INTEL_DAEMON=1` (sem daemon o warmup reinicia a cada chamada) e/ou esticar o teto.
 
 ### Fixed
+- **`workspace_symbols` silenciosamente quebrado fora de TS/Python** (relatório Dart): só roteava
+  `python→basedpyright`; **todo o resto caía no tsgo**, então `dart`/`rust`/`csharp` consultavam o
+  servidor de TypeScript → `count:0` em silêncio. Agora roteia por linguagem para os 5 backends e
+  **erra alto** em `lang` desconhecida (em vez de retornar vazio). Descrição/param `lang` atualizados.
+  Coberto por teste.
+- **`doctor` — `hint` não insiste mais em `fix=true` quando `problems: 0`** (relatório Dart): reporta
+  "nenhum problema encontrado". (O check do `.dart_tool/package_config.json` já existia; o
+  `smoke=true` agora também cobre Dart end-to-end.)
 - **`INSTALL_LSP=1` não instalava o basedpyright** (P4): só testava `pip`. Agora tenta
   `uv → pipx → pip → pip3 → python3 -m pip → npm` (`install.sh` e `install.ps1`) — o relatório
   pachamama usava `uv` e ficava sem backend Python, caindo direto em `index_not_ready`.
