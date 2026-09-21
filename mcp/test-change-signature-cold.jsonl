@@ -1,0 +1,6 @@
+# F5 cold-index (C4): rode com CODE_INTEL_WARMUP_MS=1 para forçar índice instável — espera
+# error:index_not_ready (NUNCA um WorkspaceEdit que atualiza a decl mas PERDE callers em silêncio).
+# Linhas '#' são ignoradas pelo server.
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"change_signature","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/change-sig-ts","file":"src/core.ts","symbol":"compute","spec":{"op":"reorder","order":[1,0]}}}}

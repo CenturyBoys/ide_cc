@@ -5,3 +5,4 @@ benchmarks/results/*.json
 __pycache__/
 target/
 mcp/target/
+.aux-files/

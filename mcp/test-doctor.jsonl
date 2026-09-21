@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"doctor","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/mono-ts"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"doctor","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/mono-ts","smoke":true}}}
