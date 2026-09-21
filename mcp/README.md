@@ -80,20 +80,23 @@ cargo build --release          # gera target/release/code-intel-mcp
 
 ## Uso no Claude Code (.mcp.json)
 
-Exemplo em [`../.mcp.json`](../.mcp.json). Ajuste os caminhos absolutos:
+O [`../.mcp.json`](../.mcp.json) do repo é **portátil** — sem caminho por máquina. Aponta para o
+launcher [`scripts/code-intel-mcp.sh`](../scripts/code-intel-mcp.sh), que se auto-localiza e resolve
+os language servers (tsgo/vtsls/basedpyright do `node_modules`; dart/rust-analyzer/csharp-ls do PATH):
 
 ```json
 {
   "mcpServers": {
     "code-intel": {
-      "command": "/CAMINHO/ABS/mcp/target/release/code-intel-mcp",
-      "env": { "TSGO_BIN": "...tsgo", "VTSLS_BIN": "...vtsls", "BASEDPYRIGHT_BIN": "...basedpyright-langserver" }
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/code-intel-mcp.sh"
     }
   }
 }
 ```
 
-`TSGO_BIN` aponta para o binário do tsgo (default: `tsgo` no PATH). As tools recebem `project`
+`${CLAUDE_PROJECT_DIR}` é injetado pelo Claude Code na raiz do projeto (fallback `.` para outros
+clientes que rodam a partir da raiz). Basta `cargo build --release` antes. Para sobrescrever um bin,
+exporte a env correspondente (`TSGO_BIN` etc.) — o launcher respeita. As tools recebem `project`
 (caminho absoluto da raiz) em cada chamada, então um único servidor atende vários projetos —
 cada um mantém seu processo tsgo **persistente** (o warmup é pago uma vez, depois é ~ms).
 
