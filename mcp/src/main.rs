@@ -540,12 +540,30 @@ fn same_scope_collision(
 
 fn document_symbols(client: &LspClient, abs: &str) -> Result<Vec<Value>, String> {
     client.ensure_open(abs)?;
-    let res = client.request(
-        "textDocument/documentSymbol",
-        json!({"textDocument":{"uri":path_to_uri(abs)}}),
-        10_000,
-    )?;
-    Ok(res.as_array().cloned().unwrap_or_default())
+    // Cold start de servers pesados (csharp-ls ~24s) estoura um timeout fixo de 10s. Reintenta
+    // dentro do budget de warmup (o gate não cobria document_symbols — variante do achado #3/cold).
+    let budget: u128 = std::env::var("CODE_INTEL_WARMUP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    let start = Instant::now();
+    loop {
+        match client.request(
+            "textDocument/documentSymbol",
+            json!({"textDocument":{"uri":path_to_uri(abs)}}),
+            10_000,
+        ) {
+            Ok(res) => return Ok(res.as_array().cloned().unwrap_or_default()),
+            Err(e) => {
+                // timeout/ContentModified durante indexação → re-tenta até o budget
+                let retriable = e.contains("timeout") || e.contains("-32801");
+                if start.elapsed().as_millis() >= budget || !retriable {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+    }
 }
 
 // Resolve a posição do símbolo SEMANTICAMENTE (documentSymbol); fallback textual (locate).
@@ -1132,13 +1150,14 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     }
 
     // GATE de warmup: índice quente ANTES de renomear (senão o WorkspaceEdit é incompleto).
-    let (_refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c, None)?;
+    let (refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c, None)?;
     if !stable {
         return Ok(json!({
             "applied": false, "error": "index_not_ready",
             "detail": "índice instável; rename abortado para evitar edição parcial destrutiva"
         }));
     }
+    let ref_count = refs.len() as u64;
 
     // alguns servers (ex.: Dart) VALIDAM e recusam o rename na origem (colisão de nome) —
     // devolvemos isso de forma estruturada, não como erro genérico.
@@ -1156,6 +1175,23 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
             }))
         }
     };
+
+    // Bug 1 (relatório rename, C#): o csharp-ls desambigua overload no `references` mas NÃO no
+    // `rename` — o WorkspaceEdit vaza pros overloads homônimos, com safe:true silencioso. Como já
+    // temos as REFERÊNCIAS do símbolo (warmup), detectamos o over-reach: se o rename toca MUITO mais
+    // que as refs do símbolo, provavelmente renomeia homônimos. Torna o bug (upstream) VISÍVEL e, se
+    // for claramente over-reach (>= 2x), RECUSA no apply em vez de aplicar errado em silêncio.
+    let (_bf, blast_edits, _pf) = summarize_edit(&edit, client.root());
+    let over_reach = ref_count > 0 && blast_edits > ref_count;
+    if apply && over_reach && blast_edits >= ref_count.saturating_mul(2) {
+        return Ok(json!({
+            "operation": "rename_symbol", "applied": false, "safe": false, "error": "over_reach",
+            "symbol": symbol, "new_name": new_name,
+            "references_count": ref_count, "blast_edits": blast_edits,
+            "detail": format!("o rename tocaria {blast_edits} edições, mas o símbolo tem só {ref_count} referências — o backend pode estar renomeando homônimos/overloads (bug conhecido do csharp-ls no rename). RECUSADO; revise com find_references e renomeie por posição.")
+        }));
+    }
+
     let mut result = verify_and_apply(
         &client,
         &edit,
@@ -1168,6 +1204,13 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     result["symbol"] = json!(symbol);
     result["new_name"] = json!(new_name);
     result["index_warmup_ms"] = json!(warmup_ms);
+    result["references_count"] = json!(ref_count);
+    if over_reach {
+        result["over_reach"] = json!(true);
+        result["warning"] = json!(format!(
+            "blast_radius ({blast_edits} edições) excede as referências do símbolo ({ref_count}) — possível rename de homônimos/overloads (csharp-ls). REVISE o diff."
+        ));
+    }
     Ok(result)
 }
 

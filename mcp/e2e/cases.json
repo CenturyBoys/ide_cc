@@ -249,6 +249,19 @@
     ]
   },
   {
+    "lang": "csharp",
+    "project": "fixtures/csharp-overload",
+    "setup": [["dotnet", "restore", "--nologo", "-v", "q"]],
+    "cases": [
+      {
+        "name": "Bug1: rename de 1 overload detecta OVER-REACH (csharp-ls vaza pros homônimos)",
+        "tool": "rename_symbol",
+        "args": {"file": "Overloads.cs", "symbol": "ToText", "line": 9, "new_name": "ToLabel", "apply": false},
+        "assert": [{"path": "over_reach", "op": "==", "value": true}, {"path": "references_count", "op": "==", "value": 2}]
+      }
+    ]
+  },
+  {
     "lang": "python",
     "project": "fixtures/python-basic",
     "cases": [

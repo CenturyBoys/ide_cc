@@ -6,11 +6,22 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-09-20
+
 ### Added
-- **Cobertura e2e de MONOREPO** (`fixtures/ts-monorepo`, 2 packages + alias `@core`): valida que
-  `find_references` e `rename_symbol` **cruzam packages** com segurança (find_references acha o uso
-  cross-package; rename toca os 2 arquivos, `net_delta 0`, `safe`). Confirma — e guarda — o suporte a
-  monorepo (área com muitas issues nos concorrentes; a nossa funciona).
+- **Detecção de OVER-REACH no rename** (Bug 1 do relatório rename, C#, **reproduzido localmente**):
+  o csharp-ls desambigua overload no `references` mas NÃO no `rename` — o WorkspaceEdit vaza pros
+  homônimos com `safe:true` silencioso (bug UPSTREAM do csharp-ls). Como já temos as referências do
+  símbolo (warmup), comparamos: se o rename toca mais edições que as refs, marca `over_reach` +
+  `warning` (preview) e **RECUSA no `apply=true`** quando é claramente over-reach (≥ 2×). Torna o bug
+  upstream visível e seguro. Fixture C# de overloads + caso e2e. Inclui `references_count` no retorno.
+- **Cobertura e2e de MONOREPO** (`fixtures/ts-monorepo`, 2 packages + alias `@core`): `find_references`
+  e `rename_symbol` **cruzam packages** com segurança. Confirma e guarda o suporte a monorepo.
+
+### Fixed
+- **`document_symbols`/`find_symbol` estouravam timeout no cold start de servers pesados** (csharp-ls
+  ~24s): o timeout fixo de 10s não passava pelo gate de warmup. Agora reintenta dentro do budget
+  (`CODE_INTEL_WARMUP_MS`) em timeout/ContentModified — cobrindo a lacuna "o gate cobre todas as tools?".
 
 ## [0.7.5] - 2026-09-20
 
@@ -301,7 +312,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.2...v0.7.3
