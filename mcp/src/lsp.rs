@@ -232,6 +232,26 @@ impl LspClient {
         Ok(())
     }
 
+    /// Re-sincroniza TODOS os arquivos já abertos cujo mtime em disco mudou (freshness cross-file).
+    /// Necessário porque uma mudança externa (ex.: `git checkout` revertendo um apply) troca vários
+    /// arquivos no disco sem passar por didChange — e find_references/call_hierarchy dependem de um
+    /// índice cruzado que fica stale nos arquivos NÃO consultados diretamente (Bug 3 do relatório).
+    pub fn resync_all_changed(&self) {
+        let snapshot: Vec<(String, u128)> = {
+            let opened = self.opened.lock().unwrap();
+            opened.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        };
+        for (path, tracked) in snapshot {
+            let cur = disk_mtime(&path);
+            if cur != Some(tracked) {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    self.did_change(&path, &text);
+                    self.opened.lock().unwrap().insert(path, cur.unwrap_or(0));
+                }
+            }
+        }
+    }
+
     /// Sincroniza o conteúdo (full sync) do documento com o server — SEM tocar o disco.
     /// É a base do "simulate in-memory": trocamos o texto, medimos diagnostics, e podemos voltar.
     pub fn did_change(&self, abs_file: &str, new_text: &str) {

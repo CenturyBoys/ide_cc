@@ -16,3 +16,9 @@ class FeatureFlag {
 Flag makeFlag(String n) => Flag(n);
 
 String useFlag() => makeFlag('x').label();
+
+// bloco de statements para exercitar extract_function em Dart (N1: kind refactor.extract.method)
+int compute(int a, int b) {
+  final sum = a + b;
+  return sum;
+}

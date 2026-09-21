@@ -87,25 +87,61 @@ fn is_conn_dead(e: &str) -> bool {
     e.contains("pipe") || e.contains("broken") || e.contains("os error 32")
 }
 
+// Converte um offset de BYTE numa linha para a coluna em UNIDADES UTF-16 (encoding default do LSP).
+// Sem isso, uma linha com unicode ANTES do símbolo (ex.: acento, emoji num comentário/string) faz a
+// coluna sair errada e o edit atingir a posição errada em silêncio (achado #1 da pesquisa competitiva).
+fn utf16_col(row: &str, byte_off: usize) -> u64 {
+    row.get(..byte_off)
+        .map(|s| s.encode_utf16().count() as u64)
+        .unwrap_or(byte_off as u64)
+}
+
+// Acha `symbol` como IDENTIFICADOR COMPLETO em `row` (word boundary): o char antes e depois não
+// pode ser [A-Za-z0-9_]. Sem isso, "Result" casaria DENTRO de "RefundResult" e o rename atingiria
+// o símbolo errado (Bug 2 do relatório). Retorna o byte-offset (= coluna p/ ASCII).
+fn find_ident(row: &str, symbol: &str) -> Option<usize> {
+    if symbol.is_empty() {
+        return None;
+    }
+    let bytes = row.as_bytes();
+    let slen = symbol.len();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut start = 0usize;
+    while let Some(rel) = row[start..].find(symbol) {
+        let i = start + rel;
+        let before_ok = i == 0 || !is_ident(bytes[i - 1]);
+        let after = i + slen;
+        let after_ok = after >= bytes.len() || !is_ident(bytes[after]);
+        if before_ok && after_ok {
+            return Some(i);
+        }
+        start = i + 1;
+    }
+    None
+}
+
 // Localiza a posição (LSP 0-indexed) do símbolo no arquivo. `line` opcional é 1-indexed (humano).
+// Casa por IDENTIFICADOR COMPLETO (não substring) — ver find_ident.
 fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64), String> {
     let text = std::fs::read_to_string(abs_file).map_err(|e| format!("ler {abs_file}: {e}"))?;
     let lines: Vec<&str> = text.split('\n').collect();
     if let Some(l) = line {
         let idx = (l as usize).saturating_sub(1);
         if let Some(row) = lines.get(idx) {
-            if let Some(c) = row.find(symbol) {
-                return Ok((idx as u64, c as u64));
+            if let Some(c) = find_ident(row, symbol) {
+                return Ok((idx as u64, utf16_col(row, c)));
             }
         }
-        return Err(format!("símbolo '{symbol}' não achado na linha {l}"));
+        return Err(format!(
+            "identificador '{symbol}' não achado na linha {l} (match por palavra inteira)"
+        ));
     }
     for (i, row) in lines.iter().enumerate() {
-        if let Some(c) = row.find(symbol) {
-            return Ok((i as u64, c as u64));
+        if let Some(c) = find_ident(row, symbol) {
+            return Ok((i as u64, utf16_col(row, c)));
         }
     }
-    Err(format!("símbolo '{symbol}' não achado em {abs_file}"))
+    Err(format!("identificador '{symbol}' não achado em {abs_file}"))
 }
 
 // Varre `lines` a partir de `start` (0-based) até `max` linhas à frente procurando o token
@@ -115,8 +151,9 @@ fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64),
 fn scan_ident(lines: &[&str], symbol: &str, start: usize, max: usize) -> Option<(u64, u64)> {
     let end = (start + max).min(lines.len());
     for (off, row) in lines.get(start..end)?.iter().enumerate() {
-        if let Some(c) = row.find(symbol) {
-            return Some(((start + off) as u64, c as u64));
+        // find_ident (palavra inteira) + coluna UTF-16 — consistente com locate.
+        if let Some(c) = find_ident(row, symbol) {
+            return Some(((start + off) as u64, utf16_col(row, c)));
         }
     }
     None
@@ -723,17 +760,38 @@ fn build_cmd(lang: &str) -> Option<(String, Vec<String>)> {
     })
 }
 
-// Extrai linhas de ERRO REAL da saída do build, ignorando a linha de RESUMO "N Error(s)" que o
-// dotnet/msbuild imprime SEMPRE (inclusive "0 Error(s)" num build verde). Erros reais dizem
-// "error CS1234"/"error:"/"error[E...]", nunca "error(s)". Sem esse filtro, um build verde virava
-// build_ok:false (falso-negativo que poderia reverter um apply seguro via verify_build).
+// Uma linha é RESUMO de contagem (não um erro real)? Cobre:
+//  - dotnet/msbuild: "0 Error(s)"  → contém "error(s)"
+//  - basedpyright:   "0 errors, 0 warnings, 0 notes"  → dígito antes de "error(s)"
+// Erros reais dizem "error CS1234"/"error:"/"error[E...]" — o char antes de "error" NÃO é dígito.
+fn is_count_summary(line: &str) -> bool {
+    let low = line.to_lowercase();
+    if low.contains("error(s)") {
+        return true;
+    }
+    let b = low.as_bytes();
+    let mut i = 0usize;
+    while let Some(rel) = low[i..].find("error") {
+        let pos = i + rel;
+        let mut j = pos;
+        while j > 0 && b[j - 1] == b' ' {
+            j -= 1;
+        }
+        if j > 0 && b[j - 1].is_ascii_digit() {
+            return true; // "<n> error(s)" → contagem, não erro
+        }
+        i = pos + 5;
+    }
+    false
+}
+
+// Extrai linhas de ERRO REAL da saída do build, ignorando as linhas de RESUMO de contagem (P13:
+// o basedpyright imprime "0 errors, 0 warnings, 0 notes" num build verde — sem esse filtro virava
+// build_ok:false e revertia um rename SEGURO via verify_build).
 fn parse_build_errors(output: &str) -> Vec<String> {
     output
         .lines()
-        .filter(|l| {
-            let low = l.to_lowercase();
-            low.contains("error") && !low.contains("error(s)")
-        })
+        .filter(|l| l.to_lowercase().contains("error") && !is_count_summary(l))
         .take(20)
         .map(|l| l.trim().to_string())
         .collect()
@@ -916,6 +974,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: reflete mudanças externas (git checkout) nos OUTROS arquivos
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
     let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c, None)?;
@@ -1026,6 +1085,7 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
 
@@ -1084,34 +1144,22 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
-// P11: quando o backend não oferece o refactoring, deixa claro que pode ser NÃO SUPORTADO na
-// linguagem (em vez do enigmático "nenhum refactoring disponível nesta posição").
-fn refactor_err(op: &str, lang: &str, e: String) -> String {
-    if e.contains("nenhum refactoring") {
-        format!(
-            "{op} indisponível para '{lang}' nesta seleção — os refactorings extract/move dependem do \
-             suporte do language server (garantido em TypeScript/vtsls; extract também em C#). Se \
-             '{lang}' não suporta, isto é esperado. Detalhe: {e}"
-        )
-    } else {
-        e
-    }
-}
-
 // pega o edit de um refactoring (codeAction -> resolve se lazy). Faz warmup até aparecerem ações.
 fn refactor_edit(
     client: &LspClient,
     uri: &str,
     range: &Value,
-    kind: &str,
+    kinds: &[&str],
     prefer_title: Option<&str>,
 ) -> Result<Value, String> {
     let start = Instant::now();
     let mut actions: Vec<Value> = vec![];
+    // N1: aceita VÁRIOS kinds — o nome do refactoring difere por server (vtsls:
+    // 'refactor.extract.function'; Dart: 'refactor.extract.method'). Pede todos, pega o 1º que casar.
     while start.elapsed().as_millis() < 10_000 {
         let res = client.request(
             "textDocument/codeAction",
-            json!({"textDocument":{"uri":uri},"range":range,"context":{"diagnostics":[],"only":[kind]}}),
+            json!({"textDocument":{"uri":uri},"range":range,"context":{"diagnostics":[],"only":kinds}}),
             10_000,
         )?;
         actions = res.as_array().cloned().unwrap_or_default();
@@ -1122,7 +1170,7 @@ fn refactor_edit(
     }
     if actions.is_empty() {
         return Err(format!(
-            "nenhum refactoring '{kind}' disponível nesta posição/seleção"
+            "nenhum refactoring {kinds:?} disponível nesta posição/seleção"
         ));
     }
     // escolhe por título preferido, senão a 1ª
@@ -1173,19 +1221,31 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let start_col = a["start_col"].as_u64().unwrap_or(0);
     let range = json!({"start":{"line":start_line-1,"character":start_col},"end":{"line":end_line-1,"character":end_col}});
     let uri = path_to_uri(&abs);
-    // prefere extração para o escopo do módulo (função nomeada no topo).
-    // Recuperação: se o backend (ex.: vtsls) fechar a conexão no meio, reinicia e tenta 1x.
-    let kind = "refactor.extract.function";
-    let edit = match refactor_edit(&client, &uri, &range, kind, Some("module scope")) {
+    // N1: pede o kind PAI 'refactor.extract' (hierarquia LSP) — cobre .function (vtsls) e .method
+    // (Dart) sem depender do nome exato. Recuperação: se o backend cair, reinicia e tenta 1x.
+    let kinds: &[&str] = &["refactor.extract"];
+    let edit = match refactor_edit(&client, &uri, &range, kinds, Some("module scope")) {
         Ok(e) => e,
         Err(e) if is_conn_dead(&e) => {
             client = srv.restart_client(project, backend)?;
             client.ensure_open(&abs)?;
-            refactor_edit(&client, &uri, &range, kind, Some("module scope")).map_err(|e2| {
-                format!("backend '{backend}' fechou a conexão durante extract.function e falhou após reinício (provável crash do backend): {e2}")
-            })?
+            match refactor_edit(&client, &uri, &range, kinds, Some("module scope")) {
+                Ok(e) => e,
+                Err(e2) => {
+                    return Err(format!(
+                        "backend '{backend}' fechou a conexão durante extract e falhou após reinício: {e2}"
+                    ))
+                }
+            }
         }
-        Err(e) => return Err(refactor_err("extract_function", build_lang(file), e)),
+        // N2/N1: se o backend não oferece extract nesta seleção, retorna unsupported GRACIOSO.
+        Err(_e) => {
+            return Ok(json!({
+                "operation": "extract_function",
+                "applied": false, "safe": false, "unsupported": true, "error": "extract_unsupported",
+                "detail": format!("o backend '{}' ({}) não ofereceu extract nesta seleção — selecione statements completos; extract é garantido em TypeScript (vtsls) e C#", backend, build_lang(file))
+            }));
+        }
     };
     let mut result = verify_and_apply(
         &client,
@@ -1212,17 +1272,32 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let range = json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c}});
     let uri = path_to_uri(&abs);
+    // N1: tenta kinds de move (vtsls: refactor.move; Dart: refactor.move.file / refactor.move).
     // Recuperação: se o backend cair no meio, reinicia e tenta 1x.
-    let edit = match refactor_edit(&client, &uri, &range, "refactor.move", Some("new file")) {
+    let mkinds: &[&str] = &["refactor.move"];
+    let edit = match refactor_edit(&client, &uri, &range, mkinds, Some("file")) {
         Ok(e) => e,
         Err(e) if is_conn_dead(&e) => {
             client = srv.restart_client(project, backend)?;
             client.ensure_open(&abs)?;
-            refactor_edit(&client, &uri, &range, "refactor.move", Some("new file")).map_err(|e2| {
-                format!("backend '{backend}' fechou a conexão durante move e falhou após reinício: {e2}")
-            })?
+            match refactor_edit(&client, &uri, &range, mkinds, Some("file")) {
+                Ok(e) => e,
+                Err(e2) => {
+                    return Err(format!(
+                        "backend '{backend}' fechou a conexão durante move e falhou após reinício: {e2}"
+                    ))
+                }
+            }
         }
-        Err(e) => return Err(refactor_err("move_symbol", build_lang(file), e)),
+        // N2: se o backend não oferece move-para-arquivo, retorna unsupported GRACIOSO (não erro cru),
+        // como a descrição promete.
+        Err(_e) => {
+            return Ok(json!({
+                "operation": "move_symbol", "symbol": symbol,
+                "applied": false, "safe": false, "unsupported": true, "error": "move_unsupported",
+                "detail": format!("o backend '{}' ({}) não oferece 'mover para novo arquivo' nesta posição — move via novo arquivo é garantido em TypeScript (vtsls)", backend, build_lang(file))
+            }));
+        }
     };
     // Achado 2 (relatório): "mover para novo arquivo" que NÃO cria arquivo é no-op — alguns backends
     // (ex.: csharp-ls) devolvem uma ação refactor.move trivial. Reporta honestamente em vez de safe:true.
@@ -1373,11 +1448,42 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         }
     }
     let root = client.root().to_string();
+    // N3: escopo do PROJETO. workspace/symbol de alguns servers (Dart) despeja resultados de
+    // dependências (.pub-cache, SDK) e casa substring → ruído. Mantém só o que está DENTRO do
+    // projeto e fora de dirs de dependência. project_only=false desliga o filtro.
+    let project_only = a["project_only"].as_bool().unwrap_or(true);
+    let dep_markers = [
+        ".pub-cache",
+        "/flutter/",
+        "site-packages",
+        "node_modules",
+        "/.cargo/",
+        "/target/",
+        "/.venv/",
+        ".nuget",
+        "/usr/lib/",
+        "/usr/share/",
+    ];
+    let in_scope = |uri: &str| -> bool {
+        let p = uri_to_path(uri);
+        if project_only && !p.starts_with(&root) {
+            return false;
+        }
+        !dep_markers.iter().any(|m| p.contains(m))
+    };
+    let mut dropped = 0u64;
     let list: Vec<Value> = res
         .as_array()
         .cloned()
         .unwrap_or_default()
         .iter()
+        .filter(|s| {
+            let keep = in_scope(s["location"]["uri"].as_str().unwrap_or(""));
+            if !keep {
+                dropped += 1;
+            }
+            keep
+        })
         .map(|s| {
             let (l, c) = sym_pos(s);
             let uri = s["location"]["uri"].as_str().unwrap_or("");
@@ -1395,7 +1501,10 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     } else {
         Value::Null
     };
-    Ok(json!({"query": query, "count": list.len(), "symbols": list, "warning": warning}))
+    Ok(
+        json!({"query": query, "count": list.len(), "symbols": list, "warning": warning,
+              "filtered_out": dropped, "project_only": project_only}),
+    )
 }
 
 fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
@@ -1406,6 +1515,7 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     let client = srv.client(project, nav_backend(file))?;
     let abs = format!("{}/{}", project.trim_end_matches('/'), file);
     client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
     let prep = client.request(
@@ -1421,6 +1531,7 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     };
     let incoming = client.request("callHierarchy/incomingCalls", json!({"item": item}), 10_000)?;
     let root = client.root().to_string();
+    let mut call_site_total = 0u64;
     let callers: Vec<Value> = incoming
         .as_array()
         .cloned()
@@ -1430,11 +1541,28 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
             let from = &call["from"];
             let (fl, fc) = sym_pos(from);
             let uri = from["uri"].as_str().unwrap_or("");
+            // P14: o LSP dá `fromRanges` = TODOS os call-sites daquele chamador. Antes só
+            // devolvíamos a def do chamador (1), subcontando o blast radius. Agora expõe cada site.
+            let sites: Vec<Value> = call["fromRanges"]
+                .as_array()
+                .map(|rs| {
+                    rs.iter()
+                        .map(|r| {
+                            let sl = r["start"]["line"].as_u64().unwrap_or(0) + 1;
+                            let sc = r["start"]["character"].as_u64().unwrap_or(0) + 1;
+                            json!(format!("{}:{}:{}", rel(&root, uri), sl, sc))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            call_site_total += sites.len().max(1) as u64;
             json!({"caller": from["name"].as_str().unwrap_or(""),
-                   "at": format!("{}:{}:{}", rel(&root, uri), fl + 1, fc + 1)})
+                   "at": format!("{}:{}:{}", rel(&root, uri), fl + 1, fc + 1),
+                   "call_sites": sites, "call_site_count": sites.len()})
         })
         .collect();
-    Ok(json!({"symbol": symbol, "incoming_count": callers.len(), "incoming": callers}))
+    Ok(json!({"symbol": symbol, "incoming_count": callers.len(),
+              "call_site_count": call_site_total, "incoming": callers}))
 }
 
 // Fase 5: roda o build/check da linguagem NO DISCO e reporta erros (pega o que a simulação
@@ -1894,19 +2022,20 @@ fn tools_schema() -> Value {
         },
         {
             "name": "workspace_symbols",
-            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Informe 'lang' conforme o projeto (typescript default, python, dart, rust, csharp) — lang desconhecida ERRA (não retorna vazio em silêncio).",
+            "description": "Busca símbolos por nome em TODO o projeto (workspace/symbol). Informe 'lang' conforme o projeto (typescript default, python, dart, rust, csharp) — lang desconhecida ERRA (não retorna vazio em silêncio). Escopo do PROJETO por default (exclui .pub-cache/SDK/deps); project_only=false inclui tudo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string"}, "query": {"type": "string"},
-                    "lang": {"type": "string", "description": "'typescript' (default), 'python', 'dart', 'rust' ou 'csharp'"}
+                    "lang": {"type": "string", "description": "'typescript' (default), 'python', 'dart', 'rust' ou 'csharp'"},
+                    "project_only": {"type": "boolean", "description": "default true: só símbolos dentro do projeto (fora de .pub-cache/SDK/node_modules/etc.)"}
                 },
                 "required": ["project", "query"]
             }
         },
         {
             "name": "call_hierarchy",
-            "description": "Quem chama este símbolo (incoming calls). Útil para refactoring seguro. 'symbol' aceita name_path.",
+            "description": "Quem chama este símbolo (incoming calls), com call_sites (cada chamada via fromRanges) e call_site_count além do incoming_count. 'symbol' aceita name_path.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2343,6 +2472,13 @@ mod tests {
         // cargo/rust-style
         let rustish = "error[E0308]: mismatched types\n  --> src/x.rs:3:5";
         assert_eq!(parse_build_errors(rustish).len(), 1);
+        // P13: resumo do basedpyright num build VERDE não é erro
+        let pyright_green = "/x/models.py\n0 errors, 0 warnings, 0 notes ";
+        assert!(parse_build_errors(pyright_green).is_empty());
+        // basedpyright com erro real: a linha do erro conta, o resumo "1 error" não
+        let pyright_bad =
+            "models.py:12:5 - error: \"x\" is not defined\n1 error, 0 warnings, 0 notes";
+        assert_eq!(parse_build_errors(pyright_bad).len(), 1);
     }
 
     // Relatório suite-completa: record (não-struct) rotulado Class. kind_label relabela p/ Record.
@@ -2357,6 +2493,28 @@ mod tests {
         assert_eq!(kind_label(5, &lines, 1), "Class"); // class comum
         assert_eq!(kind_label(23, &lines, 2), "Struct"); // record struct já é kind Struct
         assert_eq!(kind_label(6, &lines, 1), "Method"); // não-Class inalterado
+    }
+
+    // Achado #1 da pesquisa: coluna LSP é UTF-16, não byte. Unicode antes do símbolo desloca.
+    #[test]
+    fn utf16_col_handles_unicode() {
+        let row = "café x"; // 'é' = 2 bytes / 1 unidade UTF-16
+        assert_eq!(utf16_col(row, row.find('x').unwrap()), 5);
+        let row2 = "🚀ab"; // 🚀 = 4 bytes / 2 unidades UTF-16
+        assert_eq!(utf16_col(row2, row2.find('a').unwrap()), 2);
+        assert_eq!(utf16_col("hello world", 6), 6); // ASCII: byte == utf16
+    }
+
+    // Bug 2 (relatório rename): locate deve casar IDENTIFICADOR COMPLETO, não substring —
+    // "Result" NÃO pode casar dentro de "RefundResult".
+    #[test]
+    fn find_ident_whole_word_not_substring() {
+        let row = "    RefundResult Result, Guid? RefundId";
+        assert_eq!(find_ident(row, "Result"), Some(17)); // o parâmetro, não o tipo
+        assert_eq!(find_ident(row, "RefundResult"), Some(4)); // o tipo, inteiro
+        assert_eq!(find_ident("foobar baz", "foo"), None); // sem match inteiro
+        assert_eq!(find_ident("a.render()", "render"), Some(2)); // após '.' é boundary
+        assert_eq!(find_ident("value_id = 1", "value"), None); // 'value' dentro de 'value_id'
     }
 
     // P9: Python passa a ter comando de build/check default (antes: no-op silencioso).

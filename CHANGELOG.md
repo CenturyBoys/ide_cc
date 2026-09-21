@@ -6,6 +6,41 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-20
+
+### Added
+- **`call_hierarchy` expõe call-sites** (P14, issue #5): além de `incoming_count`, agora traz
+  `call_site_count` e, por chamador, `call_sites` (cada chamada via `fromRanges`) — antes 4 chamadas
+  no mesmo `wrapper` viravam "1" e subcontavam o blast radius.
+- **`docs/COMPETITOR-ISSUE-SCAN.md`**: varredura das issues (abertas+fechadas) de bridges LSP↔MCP
+  concorrentes (serena, mcpls, agent-lsp…), com ranking de classes de problema que podemos ter.
+
+### Fixed
+- **Coluna de posição usava offset de BYTE em vez de UTF-16** (achado #1 da pesquisa competitiva —
+  serena #2064, mcpls #290): `locate`/`scan_ident` mandavam índice de byte como `character` do LSP;
+  qualquer unicode antes do símbolo na linha (acento/emoji em comentário/string) deslocava a coluna
+  → edit na posição errada em silêncio. Agora converte para unidades UTF-16 (`utf16_col`). Coberto
+  por teste. `scan_ident` também passou a casar por identificador inteiro (não substring).
+- **P13 — `validate_build`/`verify_build` revertia rename SEGURO em Python** (issue #5): o parser lia
+  o resumo do basedpyright `"0 errors, 0 warnings, 0 notes"` como erro (regressão do meu P9 — o
+  filtro só excluía `"N Error(s)"` do dotnet). Agora `is_count_summary` ignora qualquer resumo de
+  contagem `<n> error(s)`. Coberto por teste unit + e2e (build verde → `build_ok:true`).
+- **N1/N2 (Dart) — extract/move usavam o kind do TS e/ou faziam raw-throw** (issue #4): `refactor_edit`
+  pede o kind PAI (`refactor.extract`/`refactor.move`, hierarquia LSP) e, se o backend não oferece,
+  retorna `unsupported` GRACIOSO (não erro cru) — como a descrição promete. Casos e2e Dart.
+- **N3 — `workspace_symbols` não era project-scoped** (issue #4): resultados de `.pub-cache`/SDK/deps
+  (e substring) poluíam a busca. Agora filtra ao projeto por default (`project_only`, exclui
+  `.pub-cache`/`node_modules`/SDK/etc.); reporta `filtered_out`.
+- **Bug 3 — índice stale após revert externo (`git checkout`)** (relatório rename): find_references/
+  call_hierarchy/rename agora `resync_all_changed()` — re-sincronizam TODOS os arquivos abertos com
+  mtime mudado (não só o consultado), refletindo mudanças feitas fora da ferramenta.
+- **`rename`/`find_references`/`call_hierarchy` atingiam o símbolo ERRADO por match de substring**
+  (Bug 2 do relatório rename, C#): `locate` usava `row.find(symbol)`, então `"Result"` casava DENTRO
+  de `"RefundResult"` e a operação mirava o tipo em vez do parâmetro — com `safe:true` silencioso.
+  Agora casa **identificador completo** (word boundary) via `find_ident`. Coberto por teste unitário
+  **e** por um caso e2e que asserta o ALVO da resolução (não só o flag de segurança) — a lacuna de
+  teste que deixou isso passar.
+
 ### Added
 - **Job CI `e2e-oss` (nightly + manual)**: roda o `--real` contra projetos OSS grandes e reais, um
   por linguagem (flask/Python, zod/TS, ripgrep/Rust, http/Dart) — reprodutível (os repos de campo
@@ -238,7 +273,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...v0.7.1
