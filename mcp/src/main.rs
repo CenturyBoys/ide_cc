@@ -41,6 +41,82 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+// ---- G1: GUIDANCE PORTÁTIL (server-side) — FONTE ÚNICA DA VERDADE --------
+// A orientação de uso vive AQUI, no server, não na skill (que é específica do Claude Code). Assim
+// TODO cliente MCP (Codex/Cursor/Cline/Zed…) herda a mesma utilização. Dois canais, uma fonte:
+//  - `FULL_MANUAL`: o manual completo, servido sob demanda pela tool `instructions` (C11: fonte única).
+//  - `SHORT_INSTRUCTIONS`: um EXCERTO ENXUTO derivado do mesmo manual, colocado no campo
+//    `instructions` do `initialize` (enviado toda sessão → mantido curto, C13: bloat expulsa contexto).
+// C12: é guidance (texto + notas), NUNCA bloqueio duro de workflow — as edit-tools seguem com
+// apply=false default (preview numa chamada só).
+mod guidance {
+    // Manual COMPLETO (tool `instructions`). É a fonte da verdade; o SHORT é um recorte dele.
+    pub const FULL_MANUAL: &str = r#"# code-intel — manual de uso (IDE na mão da LLM)
+
+Este MCP dá operações SEMÂNTICAS de código (via language server), rápidas e com edição VERIFICADA.
+Você decide O QUÊ; a tool faz a operação mecânica; o validador CONFERE (net_delta / build).
+
+## 1. Roteamento: semântico vs. grep
+- Para qualquer coisa sobre SÍMBOLOS (achar, contar refs, renomear, mover, extrair, deletar, mudar
+  assinatura), use as tools do code-intel — NÃO grep/sed. Grep textual corrompe strings, comentários
+  e homônimos, e muitas vezes AINDA compila (bug silencioso).
+- Reserve grep/Grep para TEXTO LITERAL: uma string, um trecho de comentário, uma chave de config.
+- find_symbol / document_symbols resolvem "método dentro de classe" por name_path ('Classe/metodo')
+  — não chute linha por texto.
+
+## 2. Confie no resultado (não releia para "conferir")
+- As tools passam por um GATE DE WARMUP: nunca devolvem uma contagem parcial durante a indexação.
+  Se o índice ainda aquece, você recebe um ERRO (index_not_ready) — não um resultado falso.
+- Confirme que find_references veio `stable: true`. Vindo estável, NÃO releia os arquivos só para
+  confirmar referências de código — a tool já garantiu o alcance.
+- Contexto enxuto: prefira document_symbols → ler só o corpo do símbolo-alvo → expandir via
+  find_references/call_hierarchy sob demanda; não "engula" o arquivo inteiro.
+
+## 3. Edite com preview → simulação → apply
+- As edit-tools têm apply=false por DEFAULT: uma chamada já te dá o PREVIEW (não toca o disco).
+- Antes de um apply arriscado, use simulate_edit (roda net_delta em memória: erros introduzidos/
+  resolvidos, veredito safe/unsafe) e/ou preview_edit (WorkspaceEdit + diff). safe_apply só persiste
+  se net_delta<=0.
+- Em Rust (ou quando quiser garantia de build), passe verify_build:true — aplica só se o build no
+  disco passar; senão REVERTE. Fecha o buraco que a simulação em memória não vê (ex.: cargo check).
+
+## 4. Meça o risco antes de uma edição ampla
+- blast_radius (READ-ONLY, composto sobre find_references + call_hierarchy) mostra a superfície de
+  risco — refs e chamadores particionados test vs. produção — ANTES de mexer num símbolo muito usado.
+- change_signature atualiza declaração + TODOS os call-sites juntos (simula antes de aplicar).
+
+## 5. Delete com segurança, não às cegas
+- safe_delete apaga um símbolo APENAS se ele não tiver referência externa; se houver USO, RECUSA e
+  lista quem referencia. Não delete texto à mão.
+
+## 6. Varredura textual APÓS o rename (grep-sweep)
+- find_references IGNORA de propósito ocorrências do nome em comentários/strings/docstrings/docs
+  (.md)/config. Depois de um rename_symbol semântico, faça UMA varredura textual do nome ANTIGO só
+  nesses lugares não-código e PERGUNTE antes de tocar (podem ser intencionais: changelog, histórico).
+- Isso NÃO contradiz o item 2: código = confie no semântico; texto não-código = único alvo do grep.
+
+## 7. Loop de diagnostics (nível-projeto)
+- A tool já garante o build da EDIÇÃO (net_delta / verify_build). O loop de projeto é SEU: rodar
+  validate_build / a suíte → ler diagnostics estruturados de OUTROS arquivos → corrigir a causa (via
+  tool semântica, não Edit textual) → re-checar até limpo. Nunca silencie diagnostic (any/ignore/
+  allow) para "fechar o loop".
+
+## 8. Setup
+- Rode `doctor` ao abrir um projeto novo: valida language server + config de workspace (sem ela,
+  find_references pode sair incompleto EM SILÊNCIO — crítico em Python). doctor smoke=true roda um
+  find_references real e alerta se a contagem parece baixa demais.
+"#;
+
+    // Excerto CURTO para o campo `instructions` do initialize (C13). Mesma fonte (FULL_MANUAL);
+    // são as regras de ouro. Chame a tool `instructions` para o manual completo.
+    pub const SHORT_INSTRUCTIONS: &str = r#"code-intel: operações SEMÂNTICAS de código com edição VERIFICADA (você decide o quê; a tool confere via net_delta/build). Regras de ouro:
+- SÍMBOLOS (achar/contar refs/renomear/mover/extrair/deletar/mudar assinatura) → use as tools do code-intel, NUNCA grep/sed (grep corrompe strings/comentários/homônimos). Grep só para TEXTO LITERAL.
+- Confie no resultado: as tools passam por um gate de warmup e devolvem ERRO (não contagem parcial) se o índice aquece. find_references estável (stable:true) → NÃO releia arquivos só para conferir.
+- Edite com preview: as edit-tools têm apply=false por default (uma chamada já é preview). Antes de um apply arriscado, use simulate_edit (net_delta) e safe_apply (só aplica se net_delta<=0). Em Rust, verify_build:true (aplica só se o build passar; senão reverte).
+- Antes de uma edição AMPLA, rode blast_radius (refs+callers, test vs. produção). Para apagar, use safe_delete (recusa se houver uso), nunca delete às cegas.
+Chame a tool `instructions` para o manual completo (roteamento, grep-sweep pós-rename, loop de diagnostics, setup via doctor)."#;
+}
+
 fn log_event(kind: &str, tool: &str, args: &Value, msg: &str) {
     let Some(path) = log_file_path() else {
         return;
@@ -264,6 +340,95 @@ fn rel(root: &str, uri: &str) -> String {
         .unwrap_or(p)
 }
 
+// ---- I1: CONTRATO DE SAÍDA `path:line:content` + contexto ---------------
+// Uma tool que devolve LOCALIZAÇÕES deve dar ao modelo `path:line:content` (a linha exata do
+// código) + ~2 linhas de contexto acima/abaixo — para reduzir re-leituras de arquivo (medido: 15,2
+// → 3,2 por tarefa). NUNCA devolvemos o payload LSP cru. Este helper é o ÚNICO ponto de formatação
+// (compartilhado por find_references/find_symbol/workspace_symbols/document_symbols/call_hierarchy).
+
+// Linhas de contexto (acima e abaixo) que acompanham cada localização.
+const CONTEXT_LINES: usize = 2;
+
+// Cache de conteúdo de arquivo por caminho ABSOLUTO. find_references pode devolver dezenas de
+// locais no MESMO arquivo; sem cache reliríamos o disco por local. Split por '\n' UMA vez.
+#[derive(Default)]
+struct SourceCache {
+    files: HashMap<String, Vec<String>>,
+}
+
+impl SourceCache {
+    // Linhas do arquivo (lidas + memoizadas). Vazio se o arquivo não pôde ser lido.
+    fn lines(&mut self, abs: &str) -> &Vec<String> {
+        self.files.entry(abs.to_string()).or_insert_with(|| {
+            std::fs::read_to_string(abs)
+                .map(|t| t.split('\n').map(|s| s.to_string()).collect())
+                .unwrap_or_default()
+        })
+    }
+}
+
+// Trunca uma linha em no MÁXIMO `max` chars, respeitando BORDA UTF-8 (nunca corta no meio de um
+// char). Sufixo '…' quando truncada. Evita despejar linhas gigantes (minificadas/geradas) no
+// contexto — mantém o payload enxuto sem quebrar unicode.
+fn clip_line(line: &str, max: usize) -> String {
+    if line.chars().count() <= max {
+        return line.to_string();
+    }
+    let mut s: String = line.chars().take(max).collect();
+    s.push('…');
+    s
+}
+
+// Comprimento máximo (em chars) de uma linha de código/contexto reportada.
+const MAX_LINE_CHARS: usize = 200;
+
+// Constrói o objeto de localização padrão para `line0` (0-indexed) no arquivo `abs`:
+//   { "at": "rel/path.ts:LINHA:COL", "content": "<a linha>", "context": ["<±2 linhas>", ...] }
+// `col0` é a coluna 0-indexed (opcional; vira 1-indexed no `at`). As linhas de contexto vêm
+// prefixadas com o número da linha ("42: código") para o modelo ancorar sem re-ler o arquivo.
+// UTF-8-safe (clip_line respeita a borda de char); clampa nos limites do arquivo.
+fn format_location(cache: &mut SourceCache, root: &str, abs: &str, line0: u64, col0: u64) -> Value {
+    let lines = cache.lines(abs);
+    let idx = line0 as usize;
+    let content = lines.get(idx).map(|s| clip_line(s, MAX_LINE_CHARS));
+    // janela de contexto [idx-CONTEXT_LINES, idx+CONTEXT_LINES], clampada nos limites do arquivo,
+    // EXCLUINDO a própria linha (já está em `content`) — cada item prefixado com o nº da linha.
+    let start = idx.saturating_sub(CONTEXT_LINES);
+    let end = (idx + CONTEXT_LINES + 1).min(lines.len());
+    let mut context: Vec<Value> = vec![];
+    for (i, l) in lines
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+        .filter(|(i, _)| *i != idx)
+    {
+        context.push(json!(format!(
+            "{}: {}",
+            i + 1,
+            clip_line(l, MAX_LINE_CHARS)
+        )));
+    }
+    let rel_path = rel(root, &path_to_uri(abs));
+    json!({
+        "at": format!("{}:{}:{}", rel_path, line0 + 1, col0 + 1),
+        "content": content,
+        "context": context,
+    })
+}
+
+// Igual a format_location, mas partindo de uma URI LSP (converte p/ path absoluto). Conveniência
+// para as tools que recebem `uri` do server (find_references, workspace_symbols, call_hierarchy).
+fn format_location_uri(
+    cache: &mut SourceCache,
+    root: &str,
+    uri: &str,
+    line0: u64,
+    col0: u64,
+) -> Value {
+    format_location(cache, root, &uri_to_path(uri), line0, col0)
+}
+
 // GATE DE WARMUP: repete find_references até a contagem estabilizar (N iguais seguidas).
 // Retorna (locations, stable, warmup_ms, polls). `stable=false` => resultado NÃO confiável.
 // Aviso acionável quando o índice não estabiliza: sugere daemon (se desligado) e/ou esticar o teto.
@@ -375,6 +540,86 @@ fn kind_label(k: u64, lines: &[&str], line0: u64) -> &'static str {
         }
     }
     kind_name(k)
+}
+
+// Range COMPLETO da declaração do símbolo ((sl,sc),(el,ec)) — o `range` (não `selectionRange`, que
+// é só o identificador). Usado pelo safe_delete para apagar a declaração inteira. Fallback p/
+// selectionRange/location quando o server não dá `range`.
+fn sym_full_range(s: &Value) -> ((u64, u64), (u64, u64)) {
+    let r = if s.get("range").is_some() {
+        &s["range"]
+    } else if s.get("location").is_some() {
+        &s["location"]["range"]
+    } else {
+        &s["selectionRange"]
+    };
+    (
+        (
+            r["start"]["line"].as_u64().unwrap_or(0),
+            r["start"]["character"].as_u64().unwrap_or(0),
+        ),
+        (
+            r["end"]["line"].as_u64().unwrap_or(0),
+            r["end"]["character"].as_u64().unwrap_or(0),
+        ),
+    )
+}
+
+// Achata a árvore de documentSymbol em (name_path, full_range) — o range COMPLETO da declaração
+// (via sym_full_range). Compartilhado por safe_delete (apagar a decl inteira) e pelas edições por
+// símbolo F4 (replace_symbol_body/insert_before/after). Mesma reconstrução de name_path do
+// flatten_symbols (usa containerName no formato achatado do tsgo/csharp-ls).
+fn flatten_ranges(
+    symbols: &[Value],
+    prefix: &str,
+    out: &mut Vec<(String, ((u64, u64), (u64, u64)))>,
+) {
+    for s in symbols {
+        let name = s["name"].as_str().unwrap_or("");
+        let fp = if !prefix.is_empty() {
+            format!("{prefix}/{name}")
+        } else if let Some(cn) = s
+            .get("containerName")
+            .and_then(|v| v.as_str())
+            .filter(|c| !c.is_empty())
+        {
+            format!("{cn}/{name}")
+        } else {
+            name.to_string()
+        };
+        out.push((fp.clone(), sym_full_range(s)));
+        if let Some(children) = s["children"].as_array() {
+            flatten_ranges(children, &fp, out);
+        }
+    }
+}
+
+// Resolve a DECLARAÇÃO de um símbolo (por nome/name_path) para seu range completo ((sl,sc),(el,ec)).
+// Prefere o símbolo cujo range CONTÉM a posição resolvida (l,c) — desambigua homônimos —; senão o
+// 1º com o nome-base. Usado por F4 para editar por símbolo sem coordenadas cruas. Erro honesto se
+// o símbolo não existe no documentSymbol.
+fn find_decl_range(
+    client: &LspClient,
+    abs: &str,
+    name_path: &str,
+    l: u64,
+) -> Result<((u64, u64), (u64, u64)), String> {
+    let last = base_name(name_path.rsplit('/').next().unwrap_or(name_path));
+    let syms = document_symbols(client, abs)?;
+    let mut flat: Vec<(String, ((u64, u64), (u64, u64)))> = vec![];
+    flatten_ranges(&syms, "", &mut flat);
+    flat.iter()
+        .filter(|(fp, r)| {
+            base_name(fp.rsplit('/').next().unwrap_or(fp)) == last && ref_in_def(l, *r)
+        })
+        .min_by_key(|(_, ((sl, _), (el, _)))| el.saturating_sub(*sl))
+        .map(|(_, r)| *r)
+        .or_else(|| {
+            flat.iter()
+                .find(|(fp, _)| base_name(fp.rsplit('/').next().unwrap_or(fp)) == last)
+                .map(|(_, r)| *r)
+        })
+        .ok_or_else(|| format!("símbolo '{name_path}' não encontrado em {abs} (documentSymbol)"))
 }
 
 fn sym_pos(s: &Value) -> (u64, u64) {
@@ -680,6 +925,25 @@ fn pos_to_offset(text: &str, line: u64, ch: u64) -> usize {
         off += l.len();
     }
     off
+}
+
+// Inverso de pos_to_offset: byte-offset → (linha, coluna 0-indexed em UNIDADES UTF-16, como o LSP).
+// Usado por change_signature (F5) para converter os spans de bytes calculados sobre o texto de volta
+// em Position LSP. UTF-16 (não char count) para casar com a coluna que o resto do código usa.
+fn offset_to_pos(text: &str, off: usize) -> (u64, u64) {
+    let mut line = 0u64;
+    let mut line_start = 0usize;
+    for (i, ch) in text.char_indices() {
+        if i >= off {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+    let col = utf16_col(&text[line_start..off.min(text.len())], off - line_start);
+    (line, col)
 }
 
 fn apply_text_edits(text: &str, edits: &[Value]) -> String {
@@ -1057,6 +1321,227 @@ fn verify_and_apply(
     }))
 }
 
+// ---- F1/C1: NÚCLEO ÚNICO de simulação + apply ---------------------------
+// `verify_and_apply` (acima) é o ÚNICO caminho que simula em memória, mede net_delta e aplica/
+// reverte. Para deixar o contrato explícito (e garantir que NINGUÉM abra um caminho de apply
+// paralelo — C1), expomos dois pontos de entrada nomeados sobre ele. rename/extract/move/
+// safe_delete/organize_imports E as tools novas (simulate_edit/preview_edit/safe_apply) chamam
+// SEMPRE um destes (ou verify_and_apply direto com o `apply` em runtime) — nunca escrevem no disco
+// por conta própria.
+
+// SIMULA em memória: mede net_delta e SEMPRE reverte (nunca toca o disco). Usado por preview_edit,
+// simulate_edit e por todo preview (apply=false) das demais tools.
+fn simulate(client: &LspClient, edit: &Value, project: &str, lang: &str) -> Result<Value, String> {
+    verify_and_apply(client, edit, false, false, project, lang)
+}
+
+// APLICA no disco SÓ SE net_delta<=0 (mesma simulação, depois persiste; com verify_build opcional
+// roda o build e reverte se falhar). Usado por safe_apply e por todo apply=true das demais tools.
+fn apply_if_safe(
+    client: &LspClient,
+    edit: &Value,
+    verify_build: bool,
+    project: &str,
+    lang: &str,
+) -> Result<Value, String> {
+    verify_and_apply(client, edit, true, verify_build, project, lang)
+}
+
+// Constrói um WorkspaceEdit (o MESMO shape que o engine já consome — `changes` por URI) a partir da
+// representação de edição que o agente fornece, para UM arquivo `abs`. Aceita, em ordem:
+//  - `edit`/`workspace_edit`: um WorkspaceEdit LSP CRU (changes/documentChanges) — repassado como está;
+//  - `new_content`: o conteúdo COMPLETO proposto do arquivo → vira um único edit que substitui o arquivo;
+//  - `edits`: lista de {start_line,end_line (1-indexed), start_col,end_col (0-indexed, opcionais),
+//             new_text} → convertida em TextEdits LSP (0-indexed).
+// Assim o agente edita por conteúdo/range sem precisar montar o WorkspaceEdit à mão, mas o núcleo
+// recebe exatamente a estrutura que rename/extract/move já produzem.
+fn build_workspace_edit(a: &Value, abs: &str, uri: &str) -> Result<Value, String> {
+    // (1) WorkspaceEdit cru — repassa direto (mesma representação interna).
+    for key in ["edit", "workspace_edit"] {
+        if let Some(e) = a.get(key).filter(|e| !e.is_null()) {
+            if e.get("changes").is_some() || e.get("documentChanges").is_some() {
+                return Ok(e.clone());
+            }
+        }
+    }
+    // (2) new_content: substitui o arquivo inteiro por um único TextEdit cobrindo todo o texto atual.
+    if let Some(nc) = a.get("new_content").and_then(|v| v.as_str()) {
+        let orig = std::fs::read_to_string(abs).unwrap_or_default();
+        let lines: Vec<&str> = orig.split('\n').collect();
+        let end_line = lines.len().saturating_sub(1) as u64;
+        let end_col = lines.last().map(|l| l.chars().count() as u64).unwrap_or(0);
+        let range =
+            json!({"start":{"line":0,"character":0},"end":{"line":end_line,"character":end_col}});
+        return Ok(json!({"changes": {uri: [{"range": range, "newText": nc}]}}));
+    }
+    // (3) edits: ranges 1-indexed (humano) → TextEdits LSP (0-indexed). Padrões pensados p/ o caso
+    // comum "substituir estas linhas": start_col omitido = 0 (início da linha); end_col omitido =
+    // FIM da end_line (substitui a linha inteira, não insere no começo). Assim {start_line,end_line,
+    // new_text} vira um replace de bloco de linhas — o que o agente quase sempre quer.
+    if let Some(arr) = a.get("edits").and_then(|v| v.as_array()) {
+        if arr.is_empty() {
+            return Err("'edits' vazio".into());
+        }
+        let orig = std::fs::read_to_string(abs).unwrap_or_default();
+        let flines: Vec<&str> = orig.split('\n').collect();
+        let mut tes = vec![];
+        for e in arr {
+            let sl = e["start_line"]
+                .as_u64()
+                .ok_or("edit sem 'start_line' (1-indexed)")?;
+            let el = e["end_line"].as_u64().unwrap_or(sl);
+            let sc = e["start_col"].as_u64().unwrap_or(0);
+            // end_col ausente → fim (em chars) da end_line no disco = "substitui a linha inteira".
+            let ec = e["end_col"].as_u64().unwrap_or_else(|| {
+                flines
+                    .get((el.saturating_sub(1)) as usize)
+                    .map(|l| l.chars().count() as u64)
+                    .unwrap_or(0)
+            });
+            let nt = e["new_text"].as_str().unwrap_or("");
+            tes.push(json!({
+                "range": {"start":{"line":sl.saturating_sub(1),"character":sc},
+                          "end":{"line":el.saturating_sub(1),"character":ec}},
+                "newText": nt
+            }));
+        }
+        return Ok(json!({"changes": {uri: tes}}));
+    }
+    Err("informe a edição proposta via 'edit' (WorkspaceEdit), 'new_content' (arquivo inteiro) ou 'edits' (lista de ranges 1-indexed)".into())
+}
+
+// Diff unificado MÍNIMO (por linha) entre `old` e `new` de UM arquivo — apenas para o preview.
+// Não é um diff LCS completo: emite um hunk simples (linhas removidas '-' seguidas das adicionadas
+// '+') sobre o intervalo que difere no início/fim. Suficiente para o agente VER a mudança sem reabrir
+// o arquivo; o WorkspaceEdit exato acompanha o preview para a verdade-fonte.
+fn unified_diff(rel_path: &str, old: &str, new: &str) -> Vec<String> {
+    if old == new {
+        return vec![];
+    }
+    let a: Vec<&str> = old.split('\n').collect();
+    let b: Vec<&str> = new.split('\n').collect();
+    // prefixo comum
+    let mut pre = 0usize;
+    while pre < a.len() && pre < b.len() && a[pre] == b[pre] {
+        pre += 1;
+    }
+    // sufixo comum (sem invadir o prefixo)
+    let mut suf = 0usize;
+    while suf < a.len() - pre && suf < b.len() - pre && a[a.len() - 1 - suf] == b[b.len() - 1 - suf]
+    {
+        suf += 1;
+    }
+    let mut out = vec![format!("--- {rel_path}"), format!("+++ {rel_path}")];
+    out.push(format!(
+        "@@ -{},{} +{},{} @@",
+        pre + 1,
+        a.len().saturating_sub(pre + suf),
+        pre + 1,
+        b.len().saturating_sub(pre + suf)
+    ));
+    for l in &a[pre..a.len() - suf] {
+        out.push(format!("-{l}"));
+    }
+    for l in &b[pre..b.len() - suf] {
+        out.push(format!("+{l}"));
+    }
+    out.truncate(200); // não estoura tokens em arquivos gerados/minificados
+    out
+}
+
+// Resolve project/file/edit comuns às 3 tools de F1 e monta (client, abs, uri, edit). O backend é o
+// de NAVEGAÇÃO (nav_backend): a edição vem pronta do agente (não é um refactoring do server), então
+// só precisamos de um server que faça diagnostics do arquivo — o mesmo que já mede net_delta.
+fn resolve_f1_edit<'s>(
+    srv: &'s Server,
+    a: &Value,
+) -> Result<(Arc<LspClient>, String, String, Value, String), String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    let uri = path_to_uri(&abs);
+    let edit = build_workspace_edit(a, &abs, &uri)?;
+    Ok((client, abs, uri, edit, project.to_string()))
+}
+
+// F1 · simulate_edit — roda net_delta EM MEMÓRIA sobre a edição proposta, SEM tocar o disco.
+// Retorna erros introduzidos/resolvidos + veredito safe/unsafe. Passa pelo mesmo núcleo (simulate →
+// verify_and_apply(apply=false)), então o resultado é idêntico ao que safe_apply usaria para decidir.
+fn tool_simulate_edit(srv: &Server, a: &Value) -> Result<Value, String> {
+    let file = a["file"].as_str().unwrap_or("");
+    let (client, abs, _uri, edit, project) = resolve_f1_edit(srv, a)?;
+    // Freshness: reflete mudanças externas antes de simular (mesmo cuidado das demais tools).
+    client.ensure_open(&abs)?;
+    client.resync_all_changed();
+    let mut result = simulate(&client, &edit, &project, build_lang(file))?;
+    result["operation"] = json!("simulate_edit");
+    result["file"] = json!(file);
+    result["verdict"] = json!(if result["safe"].as_bool().unwrap_or(false) {
+        "safe"
+    } else {
+        "unsafe"
+    });
+    Ok(result)
+}
+
+// F1 · preview_edit — mostra o que a edição MUDARIA: o WorkspaceEdit resolvido + um diff unificado +
+// um resumo de blast (arquivos/edições). Read-only (não simula diagnostics nem toca o disco): é o
+// "veja o diff antes"; use simulate_edit para o veredito de segurança e safe_apply para aplicar.
+fn tool_preview_edit(srv: &Server, a: &Value) -> Result<Value, String> {
+    let file = a["file"].as_str().unwrap_or("");
+    let (client, _abs, _uri, edit, _project) = resolve_f1_edit(srv, a)?;
+    let root = client.root().to_string();
+    let by_file = edits_by_file(&edit);
+    let (files_n, edits_n, per_file) = summarize_edit(&edit, &root);
+    // Constrói o diff por arquivo aplicando os TextEdits EM MEMÓRIA sobre o texto do disco (não escreve).
+    let mut diffs: Vec<Value> = vec![];
+    let mut touched: Vec<String> = vec![];
+    for (f, es) in &by_file {
+        let orig = std::fs::read_to_string(f).unwrap_or_default();
+        let newt = apply_text_edits(&orig, es);
+        let rel_path = rel(&root, &path_to_uri(f));
+        touched.push(rel_path.clone());
+        let d = unified_diff(&rel_path, &orig, &newt);
+        if !d.is_empty() {
+            diffs.push(json!({"file": rel_path, "diff": d}));
+        }
+    }
+    let creates: Vec<String> = creates_from(&edit)
+        .iter()
+        .map(|c| rel(&root, &path_to_uri(c)))
+        .collect();
+    Ok(json!({
+        "operation": "preview_edit",
+        "file": file,
+        "workspace_edit": edit,
+        "diffs": diffs,
+        "blast_radius": {"files": files_n, "edits": edits_n, "touched": touched, "per_file": per_file},
+        "creates": creates,
+        "note": "read-only: nenhum diagnostic simulado e nada escrito no disco. Use simulate_edit p/ o veredito net_delta e safe_apply p/ aplicar.",
+    }))
+}
+
+// F1 · safe_apply — aplica a edição proposta SÓ SE net_delta<=0 (nenhum erro novo); senão RECUSA e
+// devolve os erros introduzidos, SEM tocar o disco. Mesmo núcleo das demais (apply_if_safe →
+// verify_and_apply(apply=true)), com verify_build opcional (roda o build no disco e reverte se falhar).
+fn tool_safe_apply(srv: &Server, a: &Value) -> Result<Value, String> {
+    let file = a["file"].as_str().unwrap_or("");
+    let (client, abs, _uri, edit, project) = resolve_f1_edit(srv, a)?;
+    client.ensure_open(&abs)?;
+    client.resync_all_changed();
+    let verify_build = a["verify_build"].as_bool().unwrap_or(false);
+    let mut result = apply_if_safe(&client, &edit, verify_build, &project, build_lang(file))?;
+    result["operation"] = json!("safe_apply");
+    result["file"] = json!(file);
+    result["verdict"] = json!(if result["safe"].as_bool().unwrap_or(false) {
+        "safe"
+    } else {
+        "unsafe"
+    });
+    Ok(result)
+}
+
 fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"]
         .as_str()
@@ -1098,24 +1583,40 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
             "by_file": by_file,
         }));
     }
-    let mut locs: Vec<String> = refs
-        .iter()
-        .map(|r| {
-            let u = r["uri"].as_str().unwrap_or("");
-            let sl = r["range"]["start"]["line"].as_u64().unwrap_or(0) + 1;
-            let sc = r["range"]["start"]["character"].as_u64().unwrap_or(0) + 1;
-            format!("{}:{}:{}", rel(client.root(), u), sl, sc)
-        })
-        .collect();
+    // I1: cada referência vira `path:line:content` + ~2 linhas de contexto (via helper compartilhado),
+    // agrupada por arquivo — para o modelo NÃO precisar reabrir o arquivo p/ ler a linha. Mantém
+    // `references` (lista `path:linha:col`) para retrocompat; o novo `by_file` é o formato rico.
+    let root = client.root().to_string();
+    let mut cache = SourceCache::default();
+    let mut locs: Vec<String> = vec![];
+    let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    for r in &refs {
+        let u = r["uri"].as_str().unwrap_or("");
+        let sl0 = r["range"]["start"]["line"].as_u64().unwrap_or(0);
+        let sc0 = r["range"]["start"]["character"].as_u64().unwrap_or(0);
+        let rel_path = rel(&root, u);
+        locs.push(format!("{}:{}:{}", rel_path, sl0 + 1, sc0 + 1));
+        grouped
+            .entry(rel_path)
+            .or_default()
+            .push(format_location_uri(&mut cache, &root, u, sl0, sc0));
+    }
     locs.sort();
+    // ordena os locais de cada arquivo por linha (o helper já traz o "at" com a linha)
+    for v in grouped.values_mut() {
+        v.sort_by_key(|loc| loc["at"].as_str().unwrap_or("").to_string());
+    }
     Ok(json!({
         "symbol": symbol,
         "count": refs.len(),
+        "files": grouped.len(),
         "stable": stable,
         "warning": warning,
         "warmup_ms": warmup_ms,
         "polls": polls,
         "references": locs,
+        "by_file": grouped,
     }))
 }
 
@@ -1379,6 +1880,104 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
+// F2/C2: EXECUTOR DE CODE-ACTION `source.*` INTERNO (resolve `source.organizeImports` /
+// `source.removeUnusedImports` → WorkspaceEdit). NÃO é exposto como tool crua ao modelo (superfície
+// enxuta, C10): só as tools NOMEADAS (organize_imports) o usam. Difere de refactor_edit porque as
+// ações `source.*` operam sobre o ARQUIVO INTEIRO (não uma seleção) e o range é o documento todo.
+// Pede vários kinds `source.*`; casa a 1ª ação cujo `kind` bata (nem todo server rotula igual) e
+// resolve o edit se for lazy. Retorna Err "unsupported" quando o backend não oferece a ação.
+fn source_action_edit(client: &LspClient, uri: &str, kinds: &[&str]) -> Result<Value, String> {
+    // range = documento inteiro (source actions são file-scoped). Usa um range grande e seguro.
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":u32::MAX,"character":0}});
+    let start = Instant::now();
+    let mut actions: Vec<Value> = vec![];
+    while start.elapsed().as_millis() < 10_000 {
+        let res = client.request(
+            "textDocument/codeAction",
+            json!({"textDocument":{"uri":uri},"range":range,"context":{"diagnostics":[],"only":kinds}}),
+            10_000,
+        )?;
+        actions = res.as_array().cloned().unwrap_or_default();
+        if !actions.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    // casa por prefixo de kind (source.organizeImports.ts do vtsls conta como source.organizeImports)
+    let chosen = actions
+        .iter()
+        .find(|a| {
+            a["kind"].as_str().map_or(false, |k| {
+                kinds
+                    .iter()
+                    .any(|want| k == *want || k.starts_with(&format!("{want}.")))
+            })
+        })
+        .or_else(|| actions.first())
+        .cloned()
+        .ok_or_else(|| format!("nenhuma source-action {kinds:?} disponível neste arquivo"))?;
+    // resolve se o edit for lazy (data sem edit)
+    let action = if chosen.get("edit").map(|e| !e.is_null()).unwrap_or(false) {
+        chosen
+    } else {
+        client.request("codeAction/resolve", chosen, 10_000)?
+    };
+    action
+        .get("edit")
+        .cloned()
+        .filter(|e| !e.is_null())
+        .ok_or_else(|| "a source-action não produziu edit".to_string())
+}
+
+fn tool_organize_imports(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
+    let backend = refactor_backend(file); // C7: refactors de TS vão pro vtsls (tsgo não os tem)
+    let mut client = srv.client(project, backend)?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    let uri = path_to_uri(&abs);
+    // Pede organizeImports E removeUnusedImports (onde o server oferecer). organizeImports já
+    // reordena/dedup e remove NÃO-USADOS de forma segura — o LSP sabe o USO REAL, então NÃO remove
+    // import de side-effect (`import "./polyfill"`) nem type-only usado (o que um sed textual erraria).
+    let kinds: &[&str] = &["source.organizeImports", "source.removeUnusedImports"];
+    let edit = match source_action_edit(&client, &uri, kinds) {
+        Ok(e) => e,
+        Err(e) if is_conn_dead(&e) => {
+            client = srv.restart_client(project, backend)?;
+            client.ensure_open(&abs)?;
+            match source_action_edit(&client, &uri, kinds) {
+                Ok(e) => e,
+                Err(e2) => {
+                    return Err(format!(
+                        "backend '{backend}' fechou a conexão durante organize_imports e falhou após reinício: {e2}"
+                    ))
+                }
+            }
+        }
+        // Honesto (como move/extract): backend não oferece a source-action → unsupported, não erro cru.
+        Err(_e) => {
+            return Ok(json!({
+                "operation": "organize_imports", "file": file,
+                "applied": false, "safe": false, "unsupported": true, "error": "organize_unsupported",
+                "detail": format!("o backend '{}' ({}) não ofereceu 'source.organizeImports' neste arquivo — organize_imports é garantido em TypeScript (vtsls)", backend, build_lang(file))
+            }));
+        }
+    };
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
+    result["operation"] = json!("organize_imports");
+    result["file"] = json!(file);
+    Ok(result)
+}
+
 fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
@@ -1441,6 +2040,1130 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
+// F3: uma referência (start line) está DENTRO do range da declaração do símbolo? Assim distinguimos
+// a própria definição (que find_references retorna com includeDeclaration:true) das referências de
+// USO reais em outros lugares. Comparação por linha (o start de cada ref cai numa linha do range).
+fn ref_in_def(ref_line: u64, def: ((u64, u64), (u64, u64))) -> bool {
+    let ((sl, _), (el, _)) = def;
+    ref_line >= sl && ref_line <= el
+}
+
+// F3: deleta um símbolo APENAS se ele não tiver referências fora da própria definição. Funde
+// find_references (pós warmup gate, C4: índice frio → ERRO, nunca falso "0 refs") + net_delta +
+// verify_build num único gate. Se houver USO externo, RECUSA e devolve os locais (formato I1).
+fn tool_safe_delete(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
+    let line = a["line"].as_u64();
+    let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
+
+    // Nav backend (tsgo p/ TS): find_references é navegação, não refactor.
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file
+    let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
+    let uri = path_to_uri(&abs);
+
+    // Range COMPLETO da declaração — para (a) distinguir a def das refs de uso; (b) construir o edit
+    // que apaga a declaração inteira. Vem do documentSymbol (semântico), não de heurística textual.
+    // Range COMPLETO da declaração do alvo (helper compartilhado com F4): o símbolo cujo range
+    // CONTÉM a posição resolvida (l,c), desambiguando homônimos.
+    let def_range = find_decl_range(&client, &abs, symbol, l)?;
+
+    // GATE de warmup (C4): índice quente ANTES de decidir. Índice FRIO/instável → ERRO, nunca um
+    // falso "0 refs" que levaria a deletar um símbolo ainda referenciado.
+    let (refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c, None)?;
+    if !stable {
+        return Ok(json!({
+            "operation": "safe_delete", "symbol": symbol,
+            "applied": false, "safe": false, "error": "index_not_ready",
+            "detail": index_not_ready_hint(),
+        }));
+    }
+
+    // Separa referências de USO (fora da declaração) da própria definição. As de uso, se houver,
+    // são o motivo da RECUSA — devolvidas no formato I1 (path:line:content + contexto).
+    let root = client.root().to_string();
+    let mut cache = SourceCache::default();
+    let def_abs = uri_to_path(&uri);
+    let mut external: Vec<Value> = vec![];
+    for r in &refs {
+        let u = r["uri"].as_str().unwrap_or("");
+        let rl = r["range"]["start"]["line"].as_u64().unwrap_or(0);
+        let rc = r["range"]["start"]["character"].as_u64().unwrap_or(0);
+        // é a própria definição? (mesmo arquivo E linha dentro do range da declaração)
+        if uri_to_path(u) == def_abs && ref_in_def(rl, def_range) {
+            continue;
+        }
+        external.push(format_location_uri(&mut cache, &root, u, rl, rc));
+    }
+    if !external.is_empty() {
+        return Ok(json!({
+            "operation": "safe_delete", "symbol": symbol,
+            "applied": false, "safe": false, "error": "has_references",
+            "references_count": external.len(),
+            "index_warmup_ms": warmup_ms,
+            "detail": format!("'{symbol}' tem {} referência(s) FORA da própria definição — RECUSADO. Remova/atualize os usos antes, ou renomeie. Locais abaixo.", external.len()),
+            "references": external,
+        }));
+    }
+
+    // Zero refs externas: constrói o WorkspaceEdit que apaga a declaração inteira (do início do range
+    // até o início da linha seguinte, para não deixar linha em branco) e passa pelo verify_and_apply.
+    let ((sl, sc), (el, ec)) = def_range;
+    let del_range = json!({
+        "start": {"line": sl, "character": sc},
+        "end": {"line": el + 1, "character": 0},
+    });
+    // se o range não termina no fim da linha, usa (el,ec) — evita comer a linha seguinte por engano.
+    let del_range = {
+        let text = std::fs::read_to_string(&abs).unwrap_or_default();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let line_len = lines
+            .get(el as usize)
+            .map(|s| s.chars().count() as u64)
+            .unwrap_or(ec);
+        if ec >= line_len {
+            del_range // termina no fim da linha → apaga até o começo da próxima (some a linha toda)
+        } else {
+            json!({"start":{"line":sl,"character":sc},"end":{"line":el,"character":ec}})
+        }
+    };
+    let edit = json!({"changes": {uri.clone(): [{"range": del_range, "newText": ""}]}});
+
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
+    result["operation"] = json!("safe_delete");
+    result["symbol"] = json!(symbol);
+    result["index_warmup_ms"] = json!(warmup_ms);
+    result["references_count"] = json!(0);
+    Ok(result)
+}
+
+// ---- F4: edições POR SÍMBOLO (alvo por NOME/name_path, nunca coordenadas cruas) ----
+// As três (replace_symbol_body / insert_before_symbol / insert_after_symbol) resolvem a declaração
+// do símbolo SEMANTICAMENTE (documentSymbol → find_decl_range), montam um WorkspaceEdit e passam
+// SEMPRE pelo núcleo verify_and_apply (net_delta, verify_build opcional, preview=apply=false). NÃO
+// abrem caminho de apply/LSP novo — reusam sym_full_range (F3) e o edit-builder do F1.
+
+// Modo da edição por símbolo (o range LSP é derivado do full_range da declaração).
+enum SymEditMode {
+    Replace,      // substitui o range completo da declaração pelo texto
+    InsertBefore, // insere texto ANTES da declaração (no início da 1ª linha da decl)
+    InsertAfter,  // insere texto DEPOIS da declaração (após a última linha da decl)
+}
+
+fn symbol_scoped_edit(srv: &Server, a: &Value, mode: SymEditMode) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let symbol = a["symbol"]
+        .as_str()
+        .ok_or("faltou 'symbol' (nome ou name_path)")?;
+    let text = a["text"]
+        .as_str()
+        .ok_or("faltou 'text' (o conteúdo a inserir/substituir)")?;
+    let line = a["line"].as_u64();
+    let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
+
+    // Nav backend (tsgo p/ TS): resolvemos posição/decl por documentSymbol; a edição vem pronta.
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file
+    let (l, _c) = resolve_pos(&client, &abs, symbol, line)?;
+    let uri = path_to_uri(&abs);
+
+    // Range COMPLETO da declaração (semântico) — desambigua homônimos pelo range que contém (l,c).
+    let ((sl, sc), (el, ec)) = find_decl_range(&client, &abs, symbol, l)?;
+
+    // Deriva o range LSP + o texto do TextEdit conforme o modo. Inserções são de largura zero.
+    let (op_name, edit_range, new_text) = match mode {
+        SymEditMode::Replace => (
+            "replace_symbol_body",
+            json!({"start":{"line":sl,"character":sc},"end":{"line":el,"character":ec}}),
+            text.to_string(),
+        ),
+        // Insere no início da declaração; garante uma quebra de linha para não colar no símbolo.
+        SymEditMode::InsertBefore => {
+            let nt = if text.ends_with('\n') {
+                text.to_string()
+            } else {
+                format!("{text}\n")
+            };
+            (
+                "insert_before_symbol",
+                json!({"start":{"line":sl,"character":0},"end":{"line":sl,"character":0}}),
+                nt,
+            )
+        }
+        // Insere logo após a última linha da declaração (coluna 0 da linha seguinte).
+        SymEditMode::InsertAfter => {
+            let nt = if text.starts_with('\n') {
+                text.to_string()
+            } else {
+                format!("\n{text}")
+            };
+            (
+                "insert_after_symbol",
+                json!({"start":{"line":el,"character":ec},"end":{"line":el,"character":ec}}),
+                nt,
+            )
+        }
+    };
+    let edit = json!({"changes": {uri.clone(): [{"range": edit_range, "newText": new_text}]}});
+
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
+    result["operation"] = json!(op_name);
+    result["symbol"] = json!(symbol);
+    Ok(result)
+}
+
+fn tool_replace_symbol_body(srv: &Server, a: &Value) -> Result<Value, String> {
+    symbol_scoped_edit(srv, a, SymEditMode::Replace)
+}
+fn tool_insert_before_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
+    symbol_scoped_edit(srv, a, SymEditMode::InsertBefore)
+}
+fn tool_insert_after_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
+    symbol_scoped_edit(srv, a, SymEditMode::InsertAfter)
+}
+
+// ---- F6/C5: blast_radius — COMPOSTO sobre tools existentes (NENHUM caminho LSP novo) ----
+// Read-only. Dado um símbolo, junta (a) find_references (pós warmup gate — índice frio → ERRO,
+// nunca falso-vazio) e (b) call_hierarchy incomingCalls (chamadores). Particiona os locais em
+// test vs não-test por heurística de path. Usa I1 format_location. Serve para o modelo VER a
+// superfície de risco ANTES de editar. Não abre codeAction/refactor — só compõe refs + hierarchy.
+
+// Heurística de "arquivo de teste" por path (cobre TS/JS/Py/Rust/Dart/C#): dir __tests__/tests/
+// test, sufixos .test./.spec./_test./_spec, prefixo test_, ou nome terminando em Test/Tests/Spec.
+fn is_test_path(rel_path: &str) -> bool {
+    let p = rel_path.to_lowercase();
+    let segs: Vec<&str> = p.split('/').collect();
+    if segs
+        .iter()
+        .any(|s| matches!(*s, "test" | "tests" | "__tests__" | "spec" | "specs"))
+    {
+        return true;
+    }
+    let file = segs.last().copied().unwrap_or(&p);
+    let stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
+    // sufixos com delimitador explícito (.test/.spec/_test/_spec) e prefixo test_ — inequívocos.
+    if file.starts_with("test_")
+        || stem.ends_with(".test")
+        || stem.ends_with(".spec")
+        || stem.ends_with("_test")
+        || stem.ends_with("_spec")
+    {
+        return true;
+    }
+    // Convenção PascalCase (C#): 'WidgetTests'/'WidgetSpec'. Casa 'test'/'tests'/'spec' no fim
+    // do stem SÓ quando precedido de letra MAIÚSCULA (limite de palavra) — evita 'latest'/'manifest'.
+    // (o file veio em lowercase de `p`, então usamos o nome ORIGINAL para checar a maiúscula.)
+    for suf in ["tests", "test", "spec"] {
+        if let Some(orig_file) = rel_path.rsplit('/').next() {
+            let orig_stem = orig_file
+                .rsplit_once('.')
+                .map(|(s, _)| s)
+                .unwrap_or(orig_file);
+            if orig_stem.len() > suf.len()
+                && orig_stem.to_lowercase().ends_with(suf)
+                && orig_stem
+                    .as_bytes()
+                    .get(orig_stem.len() - suf.len())
+                    .map(|b| b.is_ascii_uppercase())
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
+    let line = a["line"].as_u64();
+
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file
+    let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
+    let uri = path_to_uri(&abs);
+
+    // (a) GATE de warmup (C4): índice frio/instável → ERRO acionável, nunca um blast_radius vazio
+    // enganoso que faria o modelo achar a edição "segura".
+    let (refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c, None)?;
+    if !stable {
+        return Ok(json!({
+            "operation": "blast_radius", "symbol": symbol,
+            "error": "index_not_ready", "detail": index_not_ready_hint(),
+        }));
+    }
+
+    let root = client.root().to_string();
+    let mut cache = SourceCache::default();
+    let def_abs = uri_to_path(&uri);
+    let ((dsl, _), (del, _)) =
+        find_decl_range(&client, &abs, symbol, l).unwrap_or(((l, 0), (l, 0))); // fallback: só a linha resolvida
+
+    // Particiona as REFERÊNCIAS (exclui a própria declaração) em test vs não-test (formato I1).
+    let mut refs_test: Vec<Value> = vec![];
+    let mut refs_prod: Vec<Value> = vec![];
+    for r in &refs {
+        let u = r["uri"].as_str().unwrap_or("");
+        let rl = r["range"]["start"]["line"].as_u64().unwrap_or(0);
+        let rc = r["range"]["start"]["character"].as_u64().unwrap_or(0);
+        // pula a própria definição (mesmo arquivo E dentro do range da declaração)
+        if uri_to_path(u) == def_abs && rl >= dsl && rl <= del {
+            continue;
+        }
+        let rel_path = rel(&root, u);
+        let loc = format_location_uri(&mut cache, &root, u, rl, rc);
+        if is_test_path(&rel_path) {
+            refs_test.push(loc);
+        } else {
+            refs_prod.push(loc);
+        }
+    }
+
+    // (b) CHAMADORES via call_hierarchy incomingCalls — mesmo caminho da tool existente, sem LSP novo.
+    let mut callers_test: Vec<Value> = vec![];
+    let mut callers_prod: Vec<Value> = vec![];
+    if let Ok(prep) = client.request(
+        "textDocument/prepareCallHierarchy",
+        json!({"textDocument":{"uri":uri},"position":{"line":l,"character":c}}),
+        10_000,
+    ) {
+        if let Some(item) = prep.as_array().and_then(|a| a.first()).cloned() {
+            if let Ok(incoming) =
+                client.request("callHierarchy/incomingCalls", json!({"item": item}), 10_000)
+            {
+                for call in incoming.as_array().cloned().unwrap_or_default() {
+                    let from = &call["from"];
+                    let (fl, fc) = sym_pos(from);
+                    let u = from["uri"].as_str().unwrap_or("");
+                    let rel_path = rel(&root, u);
+                    let loc = format_location_uri(&mut cache, &root, u, fl, fc);
+                    let entry = json!({"caller": from["name"].as_str().unwrap_or(""),
+                        "at": loc["at"].clone(), "content": loc["content"].clone(),
+                        "context": loc["context"].clone()});
+                    if is_test_path(&rel_path) {
+                        callers_test.push(entry);
+                    } else {
+                        callers_prod.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    // "exports afetados": arquivos DISTINTOS (não-test) tocados pelas referências — a superfície
+    // pública que muda de comportamento se o símbolo mudar. Composição barata sobre as refs.
+    let mut export_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for r in &refs {
+        let u = r["uri"].as_str().unwrap_or("");
+        let rp = rel(&root, u);
+        if uri_to_path(u) != def_abs && !is_test_path(&rp) {
+            export_files.insert(rp);
+        }
+    }
+
+    Ok(json!({
+        "operation": "blast_radius",
+        "symbol": symbol,
+        "stable": stable,
+        "warmup_ms": warmup_ms,
+        "summary": {
+            "references": refs_prod.len() + refs_test.len(),
+            "references_prod": refs_prod.len(),
+            "references_test": refs_test.len(),
+            "callers": callers_prod.len() + callers_test.len(),
+            "callers_prod": callers_prod.len(),
+            "callers_test": callers_test.len(),
+            "affected_files": export_files.len(),
+        },
+        "affected_files": export_files.into_iter().collect::<Vec<_>>(),
+        "references": {"non_test": refs_prod, "test": refs_test},
+        "callers": {"non_test": callers_prod, "test": callers_test},
+        "note": "read-only: composto sobre find_references (warmup-gated) + call_hierarchy. Use antes de editar para ver a superfície de risco.",
+    }))
+}
+
+// ---- F7/C2: quick_fix DIRIGIDO — aplica UMA code-action de correção para um diagnóstico ----
+// Usa o EXECUTOR INTERNO de code-action (irmão de source_action_edit): NÃO expõe um code_action
+// cru/genérico ao modelo (C2/C10). Puxa os diagnósticos na LOCALIZAÇÃO dada, pede as ações
+// `quickfix` COM esses diagnósticos no context, escolhe UMA (por título preferido, senão a 1ª),
+// resolve o edit e passa pelo verify_and_apply. Sem correção casável → unsupported/none honesto.
+
+// Coleta os diagnósticos LSP que INTERSECTAM a linha `line0` no arquivo `uri` (PULL p/ tsgo;
+// PUSH p/ vtsls/pyright, via o store de diagnostics do client). Alimenta o context da codeAction —
+// sem diagnósticos, muitos servers não oferecem quickfix. Como o PUSH é ASSÍNCRONO (o publish
+// chega depois do didOpen), faz POLLING até achar um diagnóstico na linha ou estourar o budget —
+// senão o 1º quick_fix num arquivo recém-aberto voltaria vazio por corrida (o publish ainda não
+// chegou), como o 2º acertaria (flaky). Budget curto e dedicado.
+fn on_line(all: &[Value], line0: u64) -> Vec<Value> {
+    all.iter()
+        .filter(|d| {
+            let sl = d["range"]["start"]["line"].as_u64().unwrap_or(0);
+            let el = d["range"]["end"]["line"].as_u64().unwrap_or(sl);
+            line0 >= sl && line0 <= el
+        })
+        .cloned()
+        .collect()
+}
+fn diagnostics_at(client: &LspClient, uri: &str, line0: u64) -> Vec<Value> {
+    let abs = uri_to_path(uri);
+    if client.supports_pull() {
+        return on_line(&client.pull_diagnostics(&abs).unwrap_or_default(), line0);
+    }
+    // PUSH: faz polling até o publish chegar com um diagnóstico NA LINHA (ou o budget expirar).
+    let start = Instant::now();
+    loop {
+        let hits = on_line(&client.pushed_diagnostics(&abs), line0);
+        if !hits.is_empty() || start.elapsed().as_millis() >= 5000 {
+            return hits;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// Executor interno de quickfix: pede codeAction (only quickfix) com os diagnósticos no context,
+// filtra por CodeActionKind quickfix, escolhe uma (título preferido opcional) e resolve o edit.
+// Err("nenhum quick_fix ...") quando não há correção casável — o chamador transforma em unsupported.
+fn quickfix_edit(
+    client: &LspClient,
+    uri: &str,
+    line0: u64,
+    diags: &[Value],
+    prefer_title: Option<&str>,
+) -> Result<Value, String> {
+    let range =
+        json!({"start":{"line":line0,"character":0},"end":{"line":line0,"character":u32::MAX}});
+    let res = client.request(
+        "textDocument/codeAction",
+        json!({"textDocument":{"uri":uri},"range":range,
+               "context":{"diagnostics":diags,"only":["quickfix"]}}),
+        10_000,
+    )?;
+    let actions = res.as_array().cloned().unwrap_or_default();
+    // fica só com CodeActions (não Commands) do kind quickfix (ou prefixo quickfix.*).
+    let is_quickfix = |a: &Value| {
+        a["kind"]
+            .as_str()
+            .map_or(false, |k| k == "quickfix" || k.starts_with("quickfix."))
+    };
+    let chosen = prefer_title
+        .and_then(|t| {
+            actions
+                .iter()
+                .find(|a| is_quickfix(a) && a["title"].as_str().map_or(false, |s| s.contains(t)))
+        })
+        .or_else(|| actions.iter().find(|a| is_quickfix(a)))
+        .cloned()
+        .ok_or_else(|| {
+            "nenhum quick_fix disponível para o diagnóstico nesta posição".to_string()
+        })?;
+    // resolve se o edit for lazy (data sem edit)
+    let action = if chosen.get("edit").map(|e| !e.is_null()).unwrap_or(false) {
+        chosen
+    } else {
+        client.request("codeAction/resolve", chosen, 10_000)?
+    };
+    action
+        .get("edit")
+        .cloned()
+        .filter(|e| !e.is_null())
+        .ok_or_else(|| "o quick_fix não produziu edit".to_string())
+}
+
+fn tool_quick_fix(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let line = a["line"]
+        .as_u64()
+        .ok_or("faltou 'line' (1-indexed) do diagnóstico")?;
+    let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
+    let prefer_title = a["prefer_title"].as_str(); // opcional: escolhe a ação por título
+    let line0 = line.saturating_sub(1); // 1-indexed (humano) → 0-indexed (LSP)
+
+    // Backend de REFACTOR (C7): quickfix é uma code-action → vtsls no TS (tsgo não faz refactor).
+    let backend = refactor_backend(file);
+    let mut client = srv.client(project, backend)?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    let uri = path_to_uri(&abs);
+
+    let diags = diagnostics_at(&client, &uri, line0);
+    let edit = match quickfix_edit(&client, &uri, line0, &diags, prefer_title) {
+        Ok(e) => e,
+        Err(e) if is_conn_dead(&e) => {
+            client = srv.restart_client(project, backend)?;
+            client.ensure_open(&abs)?;
+            let diags = diagnostics_at(&client, &uri, line0);
+            match quickfix_edit(&client, &uri, line0, &diags, prefer_title) {
+                Ok(e) => e,
+                Err(e2) => {
+                    return Err(format!(
+                        "backend '{backend}' fechou a conexão durante quick_fix e falhou após reinício: {e2}"
+                    ))
+                }
+            }
+        }
+        // Honesto (como organize/move/extract): sem correção casável → unsupported/none, não erro cru.
+        Err(_e) => {
+            return Ok(json!({
+                "operation": "quick_fix", "file": file, "line": line,
+                "applied": false, "safe": false, "unsupported": true, "error": "no_quick_fix",
+                "diagnostics_found": diags.len(),
+                "detail": format!("nenhum quick_fix disponível para um diagnóstico na linha {line} de {file} (backend '{backend}'). Confira se há de fato um diagnóstico ali (diagnostics_found={}).", diags.len())
+            }));
+        }
+    };
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
+    result["operation"] = json!("quick_fix");
+    result["file"] = json!(file);
+    result["line"] = json!(line);
+    Ok(result)
+}
+
+// ---- F5: change_signature (add/remove/reorder de parâmetro) ----------------------------------
+// Onde o LSP oferece um refactor NATIVO de "change signature" (não é o caso hoje de vtsls/tsgo,
+// rust-analyzer nem pyright), usaríamos o code-action. Onde NÃO oferece — que é o caso da maioria
+// e é o DIFERENCIAL — construímos o WorkspaceEdit À MÃO: reescrevemos a lista de parâmetros na
+// declaração e, para CADA call-site (descoberto via call_hierarchy/fromRanges), reescrevemos a
+// lista de argumentos com a MESMA operação. Depois SIMULAMOS net_delta + verify_build antes de
+// aplicar (verify_and_apply). Índice frio => ERRO (C4), nunca callers faltando em silêncio.
+//
+// Spec de mudança (parâmetro `spec`), simples e explícita — UMA operação por chamada:
+//   {"op":"add",     "index": <i>, "param": "<texto do parâmetro na decl>", "arg": "<texto do argumento no call-site>"}
+//   {"op":"remove",  "index": <i>}
+//   {"op":"reorder", "order": [<índices na nova ordem>]}   // permutação dos parâmetros existentes
+// `index`/`order` são 0-indexed sobre a lista de parâmetros ATUAL. add exige `arg` (o valor a
+// passar nos call-sites) — SÓ é seguro adicionar um parâmetro se soubermos o que os chamadores
+// devem passar; sem `arg` recusamos (evita call-site que não compila).
+
+// Encontra o span (byte range) da lista de argumentos/parâmetros ENTRE os parênteses cuja abertura
+// vem logo após `open_from`. Respeita aninhamento de () [] {} <> e strings/char/template — para não
+// quebrar em vírgulas dentro de genéricos, closures ou literais. Retorna (inicio_conteudo,
+// fim_conteudo) EXCLUINDO os próprios parênteses. `open_from` é o offset onde procurar o '(' de
+// abertura (ex.: logo após o identificador). None se não achar um par balanceado.
+fn paren_span(s: &str, open_from: usize) -> Option<(usize, usize)> {
+    let b = s.as_bytes();
+    let mut i = open_from;
+    while i < b.len() && b[i] != b'(' {
+        // só espaços/identificador entre o nome e o '(' — se topar com algo estranho, aborta.
+        if !(b[i] as char).is_whitespace()
+            && b[i] != b'('
+            && b[i].is_ascii_punctuation()
+            && b[i] != b'_'
+        {
+            // permite '<...>' de genéricos entre nome e '(' (raro em call-sites; comum em decls TS)
+            if b[i] == b'<' {
+                if let Some(close) = balanced_close(s, i, b'<', b'>') {
+                    i = close + 1;
+                    continue;
+                }
+            }
+            return None;
+        }
+        i += 1;
+    }
+    if i >= b.len() {
+        return None;
+    }
+    let content_start = i + 1;
+    let close = balanced_close(s, i, b'(', b')')?;
+    Some((content_start, close))
+}
+
+// Dado o offset de um caractere de abertura `open` (== s[open_off]), acha o offset do fechamento
+// balanceado correspondente, respeitando aninhamento de todos os pares e pulando strings. Retorna
+// o offset do char de fechamento. None se desbalanceado.
+fn balanced_close(s: &str, open_off: usize, open: u8, close: u8) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    let mut i = open_off;
+    let mut string: Option<u8> = None; // ", ', ` ativo
+    while i < b.len() {
+        let c = b[i];
+        if let Some(q) = string {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                string = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' | b'\'' | b'`' => string = Some(c),
+            _ if c == open => depth += 1,
+            _ if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+// Divide o conteúdo de uma lista (parâmetros ou argumentos) em itens de TOP-LEVEL, respeitando
+// aninhamento de () [] {} <> e strings. Preserva o texto exato de cada item (com espaços). Lista
+// vazia (só espaços) => vec vazio.
+fn split_top_level(content: &str) -> Vec<String> {
+    let b = content.as_bytes();
+    let mut items = vec![];
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut string: Option<u8> = None;
+    let mut i = 0usize;
+    let mut any = false;
+    while i < b.len() {
+        let c = b[i];
+        if let Some(q) = string {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                string = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' | b'\'' | b'`' => string = Some(c),
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            b',' if depth == 0 => {
+                items.push(content[start..i].to_string());
+                start = i + 1;
+                any = true;
+            }
+            _ => {}
+        }
+        if !c.is_ascii_whitespace() {
+            any = true;
+        }
+        i += 1;
+    }
+    if any {
+        items.push(content[start..].to_string());
+    }
+    // remove um eventual item final vazio (trailing comma)
+    if items.last().map(|s| s.trim().is_empty()).unwrap_or(false) {
+        items.pop();
+    }
+    items
+}
+
+// Aplica a operação da spec a uma lista de itens (parâmetros na decl OU argumentos no call-site).
+// `is_decl` escolhe o texto: `param` para a declaração, `arg` para o call-site. Preserva o trim/
+// espaçamento original re-juntando com ", ". Erros são honestos (índice fora do range, etc.).
+fn apply_sig_op(items: &[String], spec: &Value, is_decl: bool) -> Result<Vec<String>, String> {
+    let op = spec["op"]
+        .as_str()
+        .ok_or("spec sem 'op' (add|remove|reorder)")?;
+    let mut out: Vec<String> = items.iter().map(|s| s.trim().to_string()).collect();
+    match op {
+        "add" => {
+            let idx = spec["index"].as_u64().unwrap_or(out.len() as u64) as usize;
+            if idx > out.len() {
+                return Err(format!("add.index {idx} fora do range (0..={})", out.len()));
+            }
+            let text = if is_decl {
+                spec["param"]
+                    .as_str()
+                    .ok_or("add exige 'param' (texto do parâmetro na declaração)")?
+            } else {
+                // add exige 'arg' — sem saber o que os callers passam, adicionar é inseguro.
+                spec["arg"].as_str().ok_or("add exige 'arg' (o valor a passar nos call-sites) — sem ele o caller não compila")?
+            };
+            out.insert(idx, text.to_string());
+        }
+        "remove" => {
+            let idx = spec["index"]
+                .as_u64()
+                .ok_or("remove exige 'index' (0-indexed)")? as usize;
+            if idx >= out.len() {
+                return Err(format!(
+                    "remove.index {idx} fora do range (0..{})",
+                    out.len()
+                ));
+            }
+            out.remove(idx);
+        }
+        "reorder" => {
+            let order: Vec<usize> = spec["order"]
+                .as_array()
+                .ok_or("reorder exige 'order' (lista de índices na nova ordem)")?
+                .iter()
+                .map(|v| v.as_u64().map(|n| n as usize))
+                .collect::<Option<Vec<_>>>()
+                .ok_or("reorder.order deve ser uma lista de inteiros")?;
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            let expected: Vec<usize> = (0..out.len()).collect();
+            if sorted != expected {
+                return Err(format!(
+                    "reorder.order {order:?} não é uma permutação exata de 0..{} (a lista atual tem {} itens)",
+                    out.len(),
+                    out.len()
+                ));
+            }
+            out = order.into_iter().map(|i| out[i].clone()).collect();
+        }
+        other => {
+            return Err(format!(
+                "op '{other}' desconhecida (use add|remove|reorder)"
+            ))
+        }
+    }
+    Ok(out)
+}
+
+// Reescreve UMA lista (params ou args) que começa logo após `ident_end` (offset do fim do
+// identificador chamado/declarado) no texto `s`, aplicando a spec. Retorna (byte_start, byte_end,
+// novo_texto) do CONTEÚDO entre parênteses. None se não achar a lista (posição não é uma chamada/
+// declaração com parênteses balanceados) — o chamador trata como "não editável aqui".
+fn rewrite_list_at(
+    s: &str,
+    ident_end: usize,
+    spec: &Value,
+    is_decl: bool,
+) -> Option<(usize, usize, String)> {
+    let (cs, ce) = paren_span(s, ident_end)?;
+    let content = &s[cs..ce];
+    let items = split_top_level(content);
+    let new_items = apply_sig_op(&items, spec, is_decl).ok()?;
+    Some((cs, ce, new_items.join(", ")))
+}
+
+fn tool_change_signature(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let symbol = a["symbol"]
+        .as_str()
+        .ok_or("faltou 'symbol' (nome ou name_path da função/método)")?;
+    let spec = a.get("spec").filter(|s| !s.is_null()).ok_or(
+        "faltou 'spec' (a mudança: {op:add,index,param,arg} | {op:remove,index} | {op:reorder,order:[..]})",
+    )?;
+    let line = a["line"].as_u64();
+    let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
+
+    // Validação básica da spec ANTES de qualquer trabalho pesado (falha honesta e barata).
+    let op = spec["op"]
+        .as_str()
+        .ok_or("spec sem 'op' (add|remove|reorder)")?;
+    if op == "add"
+        && spec
+            .get("arg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Ok(json!({
+            "operation": "change_signature", "symbol": symbol,
+            "applied": false, "safe": false, "unsupported": true, "error": "unsafe_add",
+            "detail": "op=add exige 'arg' (o valor que os call-sites devem passar). Sem ele os chamadores não compilariam — recusado em vez de gerar edição perigosa.",
+        }));
+    }
+
+    // Backend de NAVEGAÇÃO (tsgo p/ TS): precisamos de call_hierarchy/references + diagnostics; a
+    // edição é construída à mão (não é um refactoring do server). C7: nav != refactor aqui.
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file
+    let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
+    let uri = path_to_uri(&abs);
+    let last = base_name(symbol.rsplit('/').next().unwrap_or(symbol));
+
+    // GATE de warmup (C4): índice quente ANTES de coletar call-sites. Frio/instável => ERRO — nunca
+    // um WorkspaceEdit que atualiza a declaração mas PERDE chamadores em silêncio (quebra o build).
+    let (_refs, stable, warmup_ms, _polls) = warmup_references(&client, &uri, l, c, None)?;
+    if !stable {
+        return Ok(json!({
+            "operation": "change_signature", "symbol": symbol,
+            "applied": false, "safe": false, "error": "index_not_ready",
+            "detail": index_not_ready_hint(),
+        }));
+    }
+
+    // Monta o WorkspaceEdit à mão: (1) a DECLARAÇÃO; (2) CADA call-site (via call_hierarchy).
+    let root = client.root().to_string();
+    let mut changes: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut sites = 0u64;
+
+    // (1) Declaração: reescreve a lista de parâmetros logo após o identificador na posição resolvida.
+    let decl_text = std::fs::read_to_string(&abs).map_err(|e| format!("ler {abs}: {e}"))?;
+    let decl_ident_end = {
+        let off = pos_to_offset(&decl_text, l, c);
+        // o identificador começa em `off`; avança até o fim do nome (last).
+        off + last.len()
+    };
+    match rewrite_list_at(&decl_text, decl_ident_end, spec, true) {
+        Some((cs, ce, nt)) => {
+            let (sl, sc) = offset_to_pos(&decl_text, cs);
+            let (el, ec) = offset_to_pos(&decl_text, ce);
+            changes.entry(uri.clone()).or_default().push(json!({
+                "range": {"start":{"line":sl,"character":sc},"end":{"line":el,"character":ec}},
+                "newText": nt
+            }));
+        }
+        None => {
+            return Ok(json!({
+                "operation": "change_signature", "symbol": symbol,
+                "applied": false, "safe": false, "unsupported": true, "error": "decl_not_editable",
+                "detail": format!("não consegui localizar a lista de parâmetros da declaração de '{symbol}' na posição resolvida (linha {}). change_signature à mão exige uma declaração com '( ... )' após o nome.", l + 1),
+            }));
+        }
+    }
+
+    // (2) Call-sites via call_hierarchy incomingCalls → fromRanges (cada chamada). Reescreve a lista
+    // de argumentos de cada uma. Se ALGUM call-site não for editável (não casa '(...)' balanceado),
+    // ABORTA com unsupported: melhor recusar do que aplicar uma mudança parcial que quebra callers.
+    let prep = client.request(
+        "textDocument/prepareCallHierarchy",
+        json!({"textDocument":{"uri":uri},"position":{"line":l,"character":c}}),
+        10_000,
+    )?;
+    if let Some(item) = prep.as_array().and_then(|a| a.first()).cloned() {
+        let incoming =
+            client.request("callHierarchy/incomingCalls", json!({"item": item}), 10_000)?;
+        for call in incoming.as_array().cloned().unwrap_or_default() {
+            let from = &call["from"];
+            let cu = from["uri"].as_str().unwrap_or("").to_string();
+            let cabs = uri_to_path(&cu);
+            let ctext = std::fs::read_to_string(&cabs).unwrap_or_default();
+            for r in call["fromRanges"].as_array().cloned().unwrap_or_default() {
+                let rl = r["start"]["line"].as_u64().unwrap_or(0);
+                let rc = r["start"]["character"].as_u64().unwrap_or(0);
+                // fromRanges aponta o identificador chamado; o '(' vem logo após o nome.
+                let call_off = pos_to_offset(&ctext, rl, rc);
+                // confirma que o texto no ponto é o identificador esperado (robustez: fromRanges
+                // pode apontar o início da expressão de chamada). Avança até o fim de `last`.
+                let ident_end = match ctext.get(call_off..) {
+                    Some(rest) if rest.starts_with(last) => call_off + last.len(),
+                    // fallback: procura o identificador na linha do call-site.
+                    _ => match find_ident(ctext.lines().nth(rl as usize).unwrap_or(""), last) {
+                        Some(col) => pos_to_offset(&ctext, rl, col as u64) + last.len(),
+                        None => {
+                            return Ok(json!({
+                                "operation": "change_signature", "symbol": symbol,
+                                "applied": false, "safe": false, "unsupported": true, "error": "callsite_not_editable",
+                                "detail": format!("não consegui localizar a chamada de '{last}' em {}:{} — abortado para não gerar edição parcial que quebra chamadores.", rel(&root, &cu), rl + 1),
+                            }))
+                        }
+                    },
+                };
+                match rewrite_list_at(&ctext, ident_end, spec, false) {
+                    Some((cs, ce, nt)) => {
+                        let (sl, sc) = offset_to_pos(&ctext, cs);
+                        let (el, ec) = offset_to_pos(&ctext, ce);
+                        changes.entry(cu.clone()).or_default().push(json!({
+                            "range": {"start":{"line":sl,"character":sc},"end":{"line":el,"character":ec}},
+                            "newText": nt
+                        }));
+                        sites += 1;
+                    }
+                    None => {
+                        return Ok(json!({
+                            "operation": "change_signature", "symbol": symbol,
+                            "applied": false, "safe": false, "unsupported": true, "error": "callsite_not_editable",
+                            "detail": format!("a chamada de '{last}' em {}:{} não tem uma lista de argumentos '( ... )' balanceada que eu saiba reescrever com segurança — abortado (change_signature à mão não aplica edição parcial).", rel(&root, &cu), rl + 1),
+                        }))
+                    }
+                }
+            }
+        }
+    }
+
+    let edit = json!({ "changes": changes });
+    // net_delta + verify_build são a REDE: se a reescrita à mão introduziu qualquer erro (aridade,
+    // tipo, ordem), o net_delta pega e RECUSA em vez de aplicar. É o diferencial "constrói à mão,
+    // mas confere semanticamente".
+    let mut result = verify_and_apply(
+        &client,
+        &edit,
+        apply,
+        a["verify_build"].as_bool().unwrap_or(false),
+        project,
+        build_lang(file),
+    )?;
+    result["operation"] = json!("change_signature");
+    result["symbol"] = json!(symbol);
+    result["strategy"] = json!("hand_built"); // (nenhum LSP hoje oferece o refactor nativo p/ estes)
+    result["call_sites_rewritten"] = json!(sites);
+    result["index_warmup_ms"] = json!(warmup_ms);
+    Ok(result)
+}
+
+// ---- F8: move_file (move/renomeia um arquivo inteiro + conserta importers) --------------------
+// DIFERENTE de move_symbol: move_symbol tira UM símbolo de um arquivo e o põe em outro (novo);
+// move_file move o ARQUIVO INTEIRO para um novo caminho e reescreve TODOS os importers/re-exports/
+// barrels que apontavam pra ele. Usa workspace/willRenameFiles: o server devolve o WorkspaceEdit
+// que conserta os imports; nós movemos o arquivo no disco e aplicamos esses edits via
+// verify_and_apply. basedpyright é buggy aqui (#1888: willRenameFiles ignora diretório) → confiamos
+// no verify_build (roda o build no disco e REVERTE se o move quebrar).
+
+// Move/renomeia o arquivo no disco (cria dirs do destino). Retorna Err se o destino já existe.
+fn do_move_file(src: &str, dest: &str) -> Result<(), String> {
+    if Path::new(dest).exists() {
+        return Err(format!("destino já existe: {dest}"));
+    }
+    if let Some(parent) = Path::new(dest).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("criar dir do destino: {e}"))?;
+    }
+    std::fs::rename(src, dest).map_err(|e| format!("mover {src} -> {dest}: {e}"))
+}
+
+// F8 (TS): vtsls NÃO implementa workspace/willRenameFiles (só anuncia didRename). O caminho que
+// funciona é o comando `typescript.tsserverRequest` → `getEditsForFileRename`, que devolve os
+// fixups de import no formato do tsserver (fileName + textChanges com line/offset 1-indexed).
+// Converte essa resposta num WorkspaceEdit LSP (changes por URI, ranges 0-indexed). Vazio => nenhum
+// importer para consertar (WorkspaceEdit sem changes).
+fn tsserver_rename_edit(client: &LspClient, old_abs: &str, new_abs: &str) -> Result<Value, String> {
+    let res = client.request(
+        "workspace/executeCommand",
+        json!({"command":"typescript.tsserverRequest",
+               "arguments":["getEditsForFileRename",{"oldFilePath":old_abs,"newFilePath":new_abs}]}),
+        15_000,
+    )?;
+    // O comando pode voltar {body:[...]} (envelope do tsserver) ou já o array.
+    let body = res
+        .get("body")
+        .cloned()
+        .or_else(|| res.as_array().map(|_| res.clone()))
+        .unwrap_or(Value::Null);
+    let arr = body.as_array().cloned().unwrap_or_default();
+    let mut changes = serde_json::Map::new();
+    for file_edit in &arr {
+        let fname = file_edit["fileName"].as_str().unwrap_or("");
+        if fname.is_empty() {
+            continue;
+        }
+        let uri = path_to_uri(fname);
+        let tes: Vec<Value> = file_edit["textChanges"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|tc| {
+                // tsserver: line/offset são 1-indexed; LSP: line/character 0-indexed.
+                let sl = tc["start"]["line"].as_u64().unwrap_or(1).saturating_sub(1);
+                let sc = tc["start"]["offset"].as_u64().unwrap_or(1).saturating_sub(1);
+                let el = tc["end"]["line"].as_u64().unwrap_or(1).saturating_sub(1);
+                let ec = tc["end"]["offset"].as_u64().unwrap_or(1).saturating_sub(1);
+                json!({"range":{"start":{"line":sl,"character":sc},"end":{"line":el,"character":ec}},
+                       "newText": tc["newText"].as_str().unwrap_or("")})
+            })
+            .collect();
+        if !tes.is_empty() {
+            changes.insert(uri, json!(tes));
+        }
+    }
+    Ok(json!({ "changes": Value::Object(changes) }))
+}
+
+fn tool_move_file(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let source = a["source"]
+        .as_str()
+        .ok_or("faltou 'source' (caminho relativo do arquivo a mover)")?;
+    let dest = a["dest"]
+        .as_str()
+        .ok_or("faltou 'dest' (caminho relativo de destino)")?;
+    let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (não move nem escreve)
+    let verify_build = a["verify_build"].as_bool().unwrap_or(false);
+
+    let src_abs = safe_abs(project, source)?;
+    let dest_abs = safe_abs(project, dest)?; // recusa traversal no destino também
+    if !Path::new(&src_abs).exists() {
+        return Err(format!("source não existe: {source}"));
+    }
+    if Path::new(&dest_abs).exists() {
+        return Ok(json!({
+            "operation": "move_file", "source": source, "dest": dest,
+            "applied": false, "safe": false, "error": "dest_exists",
+            "detail": format!("o destino '{dest}' já existe — recusado para não sobrescrever."),
+        }));
+    }
+
+    // Backend de REFACTOR (C7): willRenameFiles é uma operação de workspace do server de refactor
+    // (vtsls no TS; tsgo não implementa refactors/file-ops).
+    let backend = refactor_backend(source);
+    let mut client = srv.client(project, backend)?;
+    client.ensure_open(&src_abs)?;
+    client.resync_all_changed(); // Bug 3: freshness cross-file (importers)
+    let src_uri = path_to_uri(&src_abs);
+    let dest_uri = path_to_uri(&dest_abs);
+
+    let is_ts = backend == "vtsls";
+    // Pede ao server o WorkspaceEdit que conserta os importers ANTES de mover.
+    //  - Caminho padrão LSP: workspace/willRenameFiles (usado por servers que o implementam, ex.:
+    //    basedpyright — que é BUGGY, #1888; verify_build vira a rede).
+    //  - TypeScript (vtsls): NÃO implementa willRenameFiles (só anuncia didRename). Usa o comando
+    //    `typescript.tsserverRequest`/getEditsForFileRename, que dá os mesmos fixups de import.
+    let params = json!({"files":[{"oldUri": src_uri, "newUri": dest_uri}]});
+    let via_lsp = client.request("workspace/willRenameFiles", params.clone(), 15_000);
+    let import_edit = match via_lsp {
+        Ok(e) if e.get("changes").is_some() || e.get("documentChanges").is_some() => e,
+        // LSP indisponível/vazio → fallback tsserver p/ TS. Se o backend caiu, reinicia e tenta.
+        other => {
+            if let Err(e) = &other {
+                if is_conn_dead(e) {
+                    client = srv.restart_client(project, backend)?;
+                    client.ensure_open(&src_abs)?;
+                }
+            }
+            if is_ts {
+                match tsserver_rename_edit(&client, &src_abs, &dest_abs) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        return Err(format!(
+                            "move_file: nem willRenameFiles nem getEditsForFileRename (vtsls) responderam: {e}"
+                        ))
+                    }
+                }
+            } else {
+                // Server não suporta willRenameFiles e não é TS → não sabemos consertar os imports
+                // com segurança. Honesto: unsupported (não move às cegas, que deixaria imports quebrados).
+                return Ok(json!({
+                    "operation": "move_file", "source": source, "dest": dest,
+                    "applied": false, "safe": false, "unsupported": true, "error": "willrename_unsupported",
+                    "detail": format!("o backend '{}' não respondeu workspace/willRenameFiles — não é seguro mover sem consertar os importers. Suportado hoje em TypeScript (vtsls).", backend),
+                }));
+            }
+        }
+    };
+
+    // O WorkspaceEdit do willRenameFiles pode referenciar o oldUri (o server descreve edits COMO SE
+    // o arquivo ainda estivesse no lugar antigo, mas às vezes já usa o novo). Coletamos os importers
+    // (arquivos != source que serão editados) para reportar o blast.
+    let root = client.root().to_string();
+    let by_file = edits_by_file(&import_edit);
+    let importers: Vec<String> = by_file
+        .keys()
+        .filter(|p| **p != src_abs && **p != dest_abs)
+        .map(|p| rel(&root, &path_to_uri(p)))
+        .collect();
+    let (_bf, import_edits_n, _pf) = summarize_edit(&import_edit, &root);
+
+    // PREVIEW (apply=false): simula os edits de import EM MEMÓRIA (sem mover o arquivo) e mostra o
+    // blast. Não movemos no disco no preview — só medimos se os edits de import são seguros.
+    if !apply {
+        let sim = simulate(&client, &import_edit, project, build_lang(source))?;
+        return Ok(json!({
+            "operation": "move_file", "source": source, "dest": dest,
+            "applied": false, "mode": "preview",
+            "safe": sim["safe"].clone(),
+            "net_delta": sim["net_delta"].clone(),
+            "errors_introduced": sim["errors_introduced"].clone(),
+            "importers": importers,
+            "import_edits": import_edits_n,
+            "note": "preview: o arquivo NÃO foi movido; medimos só os edits de import em memória. Use apply=true (idealmente com verify_build=true, essencial p/ pyright #1888) para mover e consertar os imports.",
+        }));
+    }
+
+    // APPLY: move o arquivo no disco PRIMEIRO (rename), depois aplica os edits de import via o núcleo.
+    // Se algo falhar (edits inseguros OU build quebrado com verify_build), REVERTEMOS o move também.
+    do_move_file(&src_abs, &dest_abs)?;
+    // O willRenameFiles descreveu os edits antes do move; reabrimos o arquivo no NOVO caminho para o
+    // server ter o conteúdo. (verify_and_apply reabre os afetados; garantimos o novo aqui.)
+    client.ensure_open(&dest_abs).ok();
+
+    // Filtra do import_edit quaisquer edits sobre o PRÓPRIO arquivo movido no caminho ANTIGO (o
+    // server pode ter incluído; o arquivo não está mais lá). Mantém só edits em arquivos existentes.
+    let filtered = filter_edit_to_existing(&import_edit, &src_abs);
+
+    let apply_res = apply_if_safe(
+        &client,
+        &filtered,
+        verify_build,
+        project,
+        build_lang(source),
+    );
+    match apply_res {
+        Ok(mut result) => {
+            let applied_ok = result["applied"].as_bool().unwrap_or(false);
+            if !applied_ok {
+                // edits de import inseguros (net_delta>0) OU build quebrou e verify_and_apply reverteu
+                // os arquivos-texto — mas o MOVE do arquivo é NOSSO, então revertemos aqui também.
+                let _ = std::fs::rename(&dest_abs, &src_abs);
+                client.ensure_open(&src_abs).ok();
+                result["operation"] = json!("move_file");
+                result["source"] = json!(source);
+                result["dest"] = json!(dest);
+                result["moved"] = json!(false);
+                result["reverted"] = json!(true);
+                result["importers"] = json!(importers);
+                result["note"] = json!("REVERTIDO: o move foi desfeito porque consertar os importers introduziria erros (net_delta>0) ou o build falhou (ex.: pyright #1888 não ajusta o diretório — verify_build pegou).");
+                return Ok(result);
+            }
+            result["operation"] = json!("move_file");
+            result["source"] = json!(source);
+            result["dest"] = json!(dest);
+            result["moved"] = json!(true);
+            result["importers"] = json!(importers);
+            Ok(result)
+        }
+        Err(e) => {
+            // erro duro no apply → reverte o move para deixar o disco consistente.
+            let _ = std::fs::rename(&dest_abs, &src_abs);
+            Err(format!(
+                "move_file: falha ao aplicar os edits de import ({e}); o move foi revertido"
+            ))
+        }
+    }
+}
+
+// F8: remove de um WorkspaceEdit quaisquer changes sobre `drop_abs` (o arquivo movido, no caminho
+// antigo) e sobre arquivos que não existem mais no disco — mantendo só edits aplicáveis nos
+// importers. Preserva o shape `changes` que o núcleo consome.
+fn filter_edit_to_existing(edit: &Value, drop_abs: &str) -> Value {
+    let by_file = edits_by_file(edit);
+    let mut changes = serde_json::Map::new();
+    for (path, edits) in by_file {
+        if path == drop_abs || !Path::new(&path).exists() {
+            continue;
+        }
+        changes.insert(path_to_uri(&path), json!(edits));
+    }
+    json!({ "changes": Value::Object(changes) })
+}
+
 fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
@@ -1452,11 +3175,19 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     // Alinha o `at` ao token do identificador (pula decorators), como o workspace_symbols já faz.
     let txt = std::fs::read_to_string(&abs).unwrap_or_default();
     let flines: Vec<&str> = txt.split('\n').collect();
+    // I1: cada símbolo carrega `content` + ~2 linhas de contexto (via helper compartilhado) — assim
+    // o modelo pega a assinatura sem reabrir o arquivo. `at` fica só linha:col (o arquivo já é o param).
+    let root = client.root().to_string();
+    let mut cache = SourceCache::default();
     let list: Vec<Value> = flat
         .into_iter()
         .map(|(fp, k, l, c)| {
             let (rl, rc) = refine_at(&flines, &fp, l, c);
-            json!({"name_path": fp, "kind": kind_label(k, &flines, rl), "at": format!("{}:{}", rl + 1, rc + 1)})
+            let mut loc = format_location(&mut cache, &root, &abs, rl, rc);
+            // `at` local (só linha:col) para não repetir o path do arquivo já informado no topo.
+            loc["at"] = json!(format!("{}:{}", rl + 1, rc + 1));
+            json!({"name_path": fp, "kind": kind_label(k, &flines, rl),
+                   "at": loc["at"].clone(), "content": loc["content"].clone(), "context": loc["context"].clone()})
         })
         .collect();
     Ok(json!({"file": file, "count": list.len(), "symbols": list}))
@@ -1475,15 +3206,21 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     flatten_symbols(&syms, "", &mut flat);
     let txt = std::fs::read_to_string(&abs).unwrap_or_default();
     let flines: Vec<&str> = txt.split('\n').collect();
+    // I1: cada match traz `content` + contexto (helper compartilhado) — evita re-leitura do arquivo.
+    let root = client.root().to_string();
+    let mut cache = SourceCache::default();
     let matches: Vec<Value> = flat
         .iter()
         .filter(|(fp, ..)| name_path_matches(fp, name_path))
         .map(|(fp, k, l, c)| {
             let (rl, rc) = refine_at(&flines, fp, *l, *c);
-            json!({"name_path": fp, "kind": kind_name(*k), "at": format!("{}:{}", rl + 1, rc + 1)})
+            let mut loc = format_location(&mut cache, &root, &abs, rl, rc);
+            loc["at"] = json!(format!("{}:{}", rl + 1, rc + 1));
+            json!({"name_path": fp, "kind": kind_name(*k),
+                   "at": loc["at"].clone(), "content": loc["content"].clone(), "context": loc["context"].clone()})
         })
         .collect();
-    Ok(json!({"query": name_path, "count": matches.len(), "matches": matches}))
+    Ok(json!({"file": file, "query": name_path, "count": matches.len(), "matches": matches}))
 }
 
 // Backend do workspace_symbols por 'lang' (não há arquivo p/ auto-detectar). ERRA em lang
@@ -1594,6 +3331,9 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         !dep_markers.iter().any(|m| p.contains(m))
     };
     let mut dropped = 0u64;
+    // I1: cada símbolo do workspace vira `at` (path:line:col) + `content` + contexto (helper
+    // compartilhado). Como abrange VÁRIOS arquivos, o SourceCache evita reler o mesmo arquivo.
+    let mut cache = SourceCache::default();
     let list: Vec<Value> = res
         .as_array()
         .cloned()
@@ -1609,9 +3349,10 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         .map(|s| {
             let (l, c) = sym_pos(s);
             let uri = s["location"]["uri"].as_str().unwrap_or("");
+            let loc = format_location_uri(&mut cache, &root, uri, l, c);
             json!({"name": s["name"].as_str().unwrap_or(""),
                    "kind": kind_name(s["kind"].as_u64().unwrap_or(0)),
-                   "at": format!("{}:{}:{}", rel(&root, uri), l + 1, c + 1)})
+                   "at": loc["at"].clone(), "content": loc["content"].clone(), "context": loc["context"].clone()})
         })
         .collect();
     // vazio após o budget: sinaliza que PODE ser índice não-pronto (não afirma "não existe").
@@ -1653,6 +3394,9 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     };
     let incoming = client.request("callHierarchy/incomingCalls", json!({"item": item}), 10_000)?;
     let root = client.root().to_string();
+    // I1: cada chamador e cada call-site carrega `content` + contexto (helper compartilhado) — o
+    // modelo vê a LINHA da chamada sem reabrir o arquivo do chamador.
+    let mut cache = SourceCache::default();
     let mut call_site_total = 0u64;
     let callers: Vec<Value> = incoming
         .as_array()
@@ -1664,22 +3408,25 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
             let (fl, fc) = sym_pos(from);
             let uri = from["uri"].as_str().unwrap_or("");
             // P14: o LSP dá `fromRanges` = TODOS os call-sites daquele chamador. Antes só
-            // devolvíamos a def do chamador (1), subcontando o blast radius. Agora expõe cada site.
+            // devolvíamos a def do chamador (1), subcontando o blast radius. Agora expõe cada site
+            // como `at`+`content`+`context` (não só a string path:linha:col).
             let sites: Vec<Value> = call["fromRanges"]
                 .as_array()
                 .map(|rs| {
                     rs.iter()
                         .map(|r| {
-                            let sl = r["start"]["line"].as_u64().unwrap_or(0) + 1;
-                            let sc = r["start"]["character"].as_u64().unwrap_or(0) + 1;
-                            json!(format!("{}:{}:{}", rel(&root, uri), sl, sc))
+                            let sl0 = r["start"]["line"].as_u64().unwrap_or(0);
+                            let sc0 = r["start"]["character"].as_u64().unwrap_or(0);
+                            format_location_uri(&mut cache, &root, uri, sl0, sc0)
                         })
                         .collect()
                 })
                 .unwrap_or_default();
             call_site_total += sites.len().max(1) as u64;
+            let caller_loc = format_location_uri(&mut cache, &root, uri, fl, fc);
             json!({"caller": from["name"].as_str().unwrap_or(""),
-                   "at": format!("{}:{}:{}", rel(&root, uri), fl + 1, fc + 1),
+                   "at": caller_loc["at"].clone(), "content": caller_loc["content"].clone(),
+                   "context": caller_loc["context"].clone(),
                    "call_sites": sites, "call_site_count": sites.len()})
         })
         .collect();
@@ -1804,6 +3551,22 @@ fn is_scratch_name(name: &str) -> bool {
 
 // Coleta até `max` arquivos-fonte da linguagem, pulando build/vcs/test/scratch, PREFERINDO os que
 // estão sob src/ ou lib/ (mais provável conter símbolos de biblioteca referenciados).
+// I2: lacunas de config pyright que causam find_references INCOMPLETO em silêncio. `cfg_blob` é a
+// concatenação de pyrightconfig.json + pyproject.toml (busca textual barata). Retorna os itens
+// FALTANDO (vazio = ok). `venv_on_disk` só cobra venv/venvPath se existe um virtualenv no disco
+// (sem venv no disco, não há imports de venv p/ resolver → não é lacuna).
+fn py_config_gaps(cfg_blob: &str, venv_on_disk: bool) -> Vec<&'static str> {
+    let mut gaps = vec![];
+    if !cfg_blob.contains("include") {
+        gaps.push("include (raízes de código, ex.: [\"src\",\"tests\"])");
+    }
+    // "venv" cobre tanto a chave venv quanto venvPath.
+    if venv_on_disk && !cfg_blob.contains("venv") {
+        gaps.push("venv/venvPath (resolver imports do virtualenv)");
+    }
+    gaps
+}
+
 fn find_source_files(project: &str, ext: &str, max: usize) -> Vec<String> {
     fn walk(dir: &Path, ext: &str, root: &Path, budget: &mut u32, out: &mut Vec<String>) {
         if *budget == 0 {
@@ -1880,11 +3643,19 @@ fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(60_000);
+    // Contexto p/ a sonda de contagem (I2): num projeto multi-arquivo, um símbolo referenciável
+    // (classe/função exportada) que retorna 0-1 refs ESTÁVEIS é o assinatura do bug silencioso de
+    // config (pachamama: 5 vs 61 refs, stable:true nos dois). Só alertamos se o projeto tem >=3
+    // arquivos-fonte (evita falso-alarme em projeto minúsculo/1-arquivo, onde 1 ref é normal).
+    let file_scale = find_source_files(project, ext, 3).len();
     let start = Instant::now();
     let mut attempts = 0u32;
     let mut tried = 0u32;
     let mut last_ident = String::new();
     let mut last_file = String::new();
+    // Sonda de contagem: o 1º símbolo referenciável que resolveu ESTÁVEL com count baixo (0-1).
+    // Guardamos p/ anexar como hint mesmo quando outro símbolo depois passa (count>=2).
+    let mut low_probe: Option<Value> = None;
     for rel_file in &files {
         let Ok(client) = srv.client(project, nav_backend(rel_file)) else {
             continue;
@@ -1929,14 +3700,37 @@ fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
             else {
                 continue;
             };
-            if stable && !refs.is_empty() {
+            // Sonda de contagem (I2): count>=2 num referenciável já descarta o bug de config —
+            // retorna já com ref_probe:ok. count 0-1 estável em projeto multi-arquivo é suspeito:
+            // guardamos o hint e continuamos tentando outros símbolos (podem ter mais refs).
+            if stable && refs.len() >= 2 {
                 return json!({"ran": true, "ok": true, "symbol": ident, "file": rel_file,
-                    "count": refs.len(), "stable": true, "warmup_ms": ms, "polls": polls});
+                    "count": refs.len(), "stable": true, "warmup_ms": ms, "polls": polls,
+                    "ref_probe": {"ok": true, "count": refs.len()}});
+            }
+            if stable && file_scale >= 3 && low_probe.is_none() {
+                low_probe = Some(
+                    json!({"symbol": ident, "file": rel_file, "count": refs.len(),
+                    "stable": true,
+                    "hint": format!(
+                        "HINT (não é erro): o referenciável '{ident}' retornou só {} ref(s) ESTÁVEL num projeto com múltiplos arquivos. Pode ser símbolo realmente sem uso — OU config de workspace faltando fazendo find_references sair INCOMPLETO em silêncio (ex.: Python sem [tool.basedpyright] include/venv: pachamama deu 5 vs 61 refs, stable:true nos dois). Confirme com um grep e veja docs/LANGUAGE-SETUP.md.",
+                        refs.len())}),
+                );
             }
         }
         if start.elapsed().as_millis() + 2_000 >= total_budget {
             break;
         }
+    }
+    // Chegou aqui: nenhum símbolo passou com count>=2. Se algum resolveu ESTÁVEL com 0-1 ref num
+    // projeto multi-arquivo, o smoke "rodou" (o server respondeu), mas levantamos o hint de sonda
+    // de contagem — é exatamente a assinatura do bug silencioso de config.
+    if let Some(probe) = low_probe {
+        return json!({"ran": true, "ok": true, "symbols_tried": tried,
+            "count": probe["count"].clone(), "stable": true,
+            "symbol": probe["symbol"].clone(), "file": probe["file"].clone(),
+            "ref_probe": {"ok": false, "low_ref": true,
+                "count": probe["count"].clone(), "hint": probe["hint"].clone()}});
     }
     // Nenhum símbolo com referências estáveis — pode ser índice frio OU símbolos-folha nos arquivos
     // testados. Mensagem acionável, distinguindo dos casos "não rodou".
@@ -1982,19 +3776,31 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
 
         match *lang {
             "python" => {
-                let has_cfg = p.join("pyrightconfig.json").exists();
+                // Detecção do bug silencioso #1 (pachamama 5 vs 61 refs). Dois casos:
+                //  (a) NENHUMA config pyright → basedpyright roda em openFilesOnly → refs incompletas.
+                //  (b) config EXISTE mas sem include/venv/venvPath → ainda pode sair incompleto
+                //      (sem include o server não sabe as raízes; sem venv não resolve imports do venv).
+                let pyrightconfig =
+                    std::fs::read_to_string(p.join("pyrightconfig.json")).unwrap_or_default();
+                let has_cfg = !pyrightconfig.trim().is_empty();
                 let pyproject =
                     std::fs::read_to_string(p.join("pyproject.toml")).unwrap_or_default();
                 let has_tool = pyproject.contains("[tool.basedpyright]")
                     || pyproject.contains("[tool.pyright]");
+                // Concatena as duas fontes p/ checar as chaves relevantes (busca textual barata: a
+                // chave pode estar em qualquer uma; pyrightconfig.json usa "include"/"venv", o
+                // pyproject.toml usa include/venv sob [tool.*]).
+                let cfg_blob = format!("{pyrightconfig}\n{pyproject}");
+                let venv_on_disk = [".venv", "venv", "env"]
+                    .iter()
+                    .find(|d| p.join(d).join("pyvenv.cfg").exists())
+                    .copied();
+                let cfg_gaps = py_config_gaps(&cfg_blob, venv_on_disk.is_some());
                 if !has_cfg && !has_tool {
                     cfg_ok = false;
-                    issue = json!("sem [tool.basedpyright]/pyrightconfig.json → find_references INCOMPLETO (modo openFilesOnly)");
+                    issue = json!("sem [tool.basedpyright]/pyrightconfig.json → find_references INCOMPLETO em SILÊNCIO (basedpyright cai em openFilesOnly; pachamama deu 5 vs 61 refs, stable:true nos dois)");
                     let src = if p.join("src").is_dir() { "src" } else { "." };
-                    let venv = [".venv", "venv", "env"]
-                        .iter()
-                        .find(|d| p.join(d).join("pyvenv.cfg").exists())
-                        .copied();
+                    let venv = venv_on_disk;
                     fix_desc = json!(format!(
                         "criar pyrightconfig.json (include=[\"{src}\"]{})",
                         venv.map(|v| format!(", venv=\"{v}\"")).unwrap_or_default()
@@ -2013,6 +3819,17 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
                         applied = json!(true);
                         cfg_ok = true;
                     }
+                } else if !cfg_gaps.is_empty() {
+                    // Caso (b): config existe mas INCOMPLETA. Não é falha dura (mantém cfg_ok=true,
+                    // deixa o smoke rodar) — é um WARN, porque sem include/venv o resultado ainda
+                    // pode sair parcial em silêncio. Sinalizamos via issue/fix sem bloquear.
+                    let faltando = cfg_gaps.join(" e ");
+                    issue = json!(format!(
+                        "config pyright presente mas SEM {faltando} → risco de find_references INCOMPLETO em silêncio (pachamama: 5 vs 61 refs). WARN, não bloqueio."
+                    ));
+                    fix_desc = json!(format!(
+                        "adicione {faltando} à config existente (ver docs/LANGUAGE-SETUP.md)"
+                    ));
                 }
             }
             "dart" => {
@@ -2067,6 +3884,28 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
                     && !e["smoke"]["ok"].as_bool().unwrap_or(true))
         })
         .count();
+    // Warnings SOFT (I2): não contam como `problems` (não bloqueiam), mas são a assinatura do bug
+    // silencioso #1 — juntamos aqui p/ ficarem visíveis sem escavar cada entrada do report:
+    //  - config de workspace presente mas incompleta (cfg_ok=true + issue não-nula);
+    //  - sonda de contagem: um referenciável retornou 0-1 ref estável (ref_probe.low_ref).
+    let mut warnings = vec![];
+    for e in &report {
+        if e["workspace_config"]["ok"].as_bool().unwrap_or(true)
+            && !e["workspace_config"]["issue"].is_null()
+        {
+            warnings.push(
+                json!({"lang": e["lang"].clone(), "kind": "config_incompleta",
+                "detail": e["workspace_config"]["issue"].clone()}),
+            );
+        }
+        if e["smoke"]["ref_probe"]["low_ref"]
+            .as_bool()
+            .unwrap_or(false)
+        {
+            warnings.push(json!({"lang": e["lang"].clone(), "kind": "ref_count_baixa",
+                "detail": e["smoke"]["ref_probe"]["hint"].clone()}));
+        }
+    }
     let hint = if problems == 0 && smoke {
         "nenhum problema encontrado (inclui smoke test end-to-end)"
     } else if problems == 0 {
@@ -2082,9 +3921,19 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         "project": project,
         "languages_detected": langs,
         "problems": problems,
+        "warnings": warnings, // avisos soft (config incompleta / ref-count baixa) — não bloqueiam
         "report": report,
         "hint": hint,
         "error_log": log_file_path().map(|p| p.to_string_lossy().into_owned()),
+    }))
+}
+
+// G1: manual completo de uso sob demanda. Devolve `guidance::FULL_MANUAL` (a FONTE ÚNICA da verdade
+// — o campo `instructions` do initialize é um excerto do mesmo texto). Sem argumentos.
+fn tool_instructions() -> Result<Value, String> {
+    Ok(json!({
+        "manual": guidance::FULL_MANUAL,
+        "note": "Guidance server-side (portátil a qualquer cliente MCP). O campo `instructions` do initialize traz um excerto curto deste mesmo manual.",
     }))
 }
 
@@ -2202,8 +4051,190 @@ fn tools_schema() -> Value {
             }
         },
         {
+            "name": "organize_imports",
+            "description": "Organiza os imports de um arquivo (reordena, deduplica e remove NÃO-USADOS) via a source-action do language server (vtsls no TS). SEGURO onde um sed/grep erraria: o LSP conhece o USO REAL, então NÃO remove import de side-effect (`import \"./polyfill\"`) nem type-only ainda usado. Mesmo ciclo apply→verify com net_delta: apply=false (default) = preview; apply=true persiste só se net_delta<=0. Se o backend não oferecer a ação, retorna unsupported em vez de fingir sucesso.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
+                },
+                "required": ["project", "file"]
+            }
+        },
+        {
+            "name": "safe_delete",
+            "description": "Deleta um símbolo (função/classe/método/tipo/variável) APENAS se ele NÃO tiver referências fora da própria definição. Funde find_references (gate de warmup: índice frio → ERRO, nunca falso '0 refs') + net_delta + verify_build num único gate. Se houver USO externo, RECUSA e lista os locais (path:linha:conteúdo). Se zero, apaga a declaração inteira via o mesmo apply→verify. apply=false (default) = preview; apply=true persiste só se seguro. 'symbol' aceita name_path ('Classe/metodo').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "symbol": {"type": "string", "description": "nome ou name_path (ex.: 'unusedHelper' ou 'Widget/oldMethod')"},
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
+                },
+                "required": ["project", "file", "symbol"]
+            }
+        },
+        {
+            "name": "replace_symbol_body",
+            "description": "Substitui a declaração/corpo COMPLETO de um símbolo (função/classe/método/tipo/variável) — alvo por NOME/name_path, NUNCA por coordenadas cruas. Resolve o range da declaração via documentSymbol e passa pelo mesmo apply→verify com net_delta das demais edições: apply=false (default) = preview (mede e reverte); apply=true persiste só se net_delta<=0. 'symbol' aceita name_path ('Classe/metodo').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "symbol": {"type": "string", "description": "nome ou name_path (ex.: 'compute' ou 'Widget/render')"},
+                    "text": {"type": "string", "description": "o texto NOVO da declaração inteira (substitui o range completo do símbolo)"},
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar homônimos"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
+                },
+                "required": ["project", "file", "symbol", "text"]
+            }
+        },
+        {
+            "name": "insert_before_symbol",
+            "description": "Insere texto IMEDIATAMENTE ANTES da declaração de um símbolo (alvo por NOME/name_path, sem coordenadas cruas). Útil para adicionar um decorator, comentário, overload ou uma nova declaração-irmã acima. Mesmo apply→verify com net_delta: apply=false (default) = preview; apply=true persiste só se seguro.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "symbol": {"type": "string", "description": "nome ou name_path"},
+                    "text": {"type": "string", "description": "o texto a inserir antes do símbolo (uma quebra de linha é garantida)"},
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica se seguro"},
+                    "verify_build": {"type": "boolean"}
+                },
+                "required": ["project", "file", "symbol", "text"]
+            }
+        },
+        {
+            "name": "insert_after_symbol",
+            "description": "Insere texto IMEDIATAMENTE DEPOIS da declaração de um símbolo (alvo por NOME/name_path, sem coordenadas cruas). Útil para adicionar uma nova declaração-irmã logo abaixo. Mesmo apply→verify com net_delta: apply=false (default) = preview; apply=true persiste só se seguro.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "symbol": {"type": "string", "description": "nome ou name_path"},
+                    "text": {"type": "string", "description": "o texto a inserir depois do símbolo (uma quebra de linha é garantida)"},
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica se seguro"},
+                    "verify_build": {"type": "boolean"}
+                },
+                "required": ["project", "file", "symbol", "text"]
+            }
+        },
+        {
+            "name": "blast_radius",
+            "description": "Superfície de RISCO de mexer num símbolo, ANTES de editar. READ-ONLY e COMPOSTO sobre as tools existentes (find_references + call_hierarchy) — não roda nenhuma operação nova. Retorna as referências e os chamadores PARTICIONADOS em test vs não-test (produção), os arquivos afetados e um resumo de contagens. Passa pelo gate de warmup: índice frio → ERRO, nunca um raio vazio enganoso. Locais no formato path:linha:conteúdo. 'symbol' aceita name_path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "symbol": {"type": "string", "description": "nome ou name_path (ex.: 'compute' ou 'Widget/render')"},
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar"}
+                },
+                "required": ["project", "file", "symbol"]
+            }
+        },
+        {
+            "name": "quick_fix",
+            "description": "Aplica UMA correção (quick-fix) do language server para um diagnóstico numa LINHA específica (ex.: import faltando, remover não-usado, adicionar await). Usa o executor de code-action interno (kind 'quickfix'), NÃO um code_action cru/genérico. Escolhe a 1ª ação casável (ou a que bate 'prefer_title') e passa pelo mesmo apply→verify com net_delta: apply=false (default) = preview; apply=true persiste só se seguro. Se não houver correção para aquele diagnóstico, retorna unsupported/none honesto (não finge sucesso). No TS roteia p/ vtsls.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "line": {"type": "integer", "description": "linha 1-indexed do diagnóstico a corrigir"},
+                    "prefer_title": {"type": "string", "description": "opcional: escolhe a ação cujo título contém este texto (ex.: 'Add import')"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
+                },
+                "required": ["project", "file", "line"]
+            }
+        },
+        {
+            "name": "change_signature",
+            "description": "Muda a assinatura de uma função/método (adiciona, remove ou reordena um parâmetro) E ATUALIZA TODOS os call-sites juntos. Onde nenhum language server oferece esse refactor nativo (TypeScript/vtsls, rust-analyzer, pyright — a maioria), constrói o WorkspaceEdit À MÃO: descobre os chamadores via call_hierarchy (gate de warmup: índice frio → ERRO, nunca callers faltando em silêncio), reescreve a declaração e cada chamada, e então SIMULA net_delta + verify_build antes de aplicar (apply=false=preview; apply=true persiste só se net_delta<=0). Se não der para reescrever com segurança um call-site (ou a declaração), retorna unsupported em vez de aplicar uma edição PARCIAL/perigosa. spec: op='add' exige 'index','param' (texto na decl) e 'arg' (valor nos call-sites); op='remove' exige 'index'; op='reorder' exige 'order' (permutação dos índices). Índices 0-based. 'symbol' aceita name_path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "symbol": {"type": "string", "description": "nome ou name_path da função/método (ex.: 'compute' ou 'Widget/render')"},
+                    "spec": {"type": "object", "description": "a mudança (UMA op): {\"op\":\"add\",\"index\":<i>,\"param\":\"x: number\",\"arg\":\"0\"} | {\"op\":\"remove\",\"index\":<i>} | {\"op\":\"reorder\",\"order\":[1,0]}"},
+                    "line": {"type": "integer", "description": "opcional: linha 1-indexed para desambiguar homônimos"},
+                    "apply": {"type": "boolean", "description": "false=preview (default); true=aplica no disco se net_delta<=0"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar (pega erros de aridade/tipo que a simulação em memória pode não ver)"}
+                },
+                "required": ["project", "file", "symbol", "spec"]
+            }
+        },
+        {
+            "name": "move_file",
+            "description": "Move/renomeia um ARQUIVO INTEIRO para um novo caminho e conserta TODOS os importers/re-exports/barrels que apontavam para ele (via workspace/willRenameFiles do language server). DIFERE de move_symbol: move_symbol tira UM símbolo de um arquivo e o põe em outro; move_file move o arquivo todo + o fixup de imports. apply=false (default) = preview (NÃO move; só mede os edits de import em memória e lista os importers); apply=true move no disco e aplica os edits via net_delta, com verify_build opcional. basedpyright tem bug conhecido aqui (#1888: willRenameFiles ignora o diretório) → use verify_build=true: se o move quebrar o build, o move é REVERTIDO (arquivo volta ao lugar). Se o backend não implementar willRenameFiles, retorna unsupported (não move às cegas). Confiável hoje em TypeScript (vtsls).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "source": {"type": "string", "description": "caminho do arquivo a mover, RELATIVO ao project"},
+                    "dest": {"type": "string", "description": "caminho de destino, RELATIVO ao project (recusa se já existir)"},
+                    "apply": {"type": "boolean", "description": "false=preview sem mover (default); true=move e conserta os imports se seguro"},
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build após mover e REVERTE o move se falhar (essencial p/ pyright #1888)"}
+                },
+                "required": ["project", "source", "dest"]
+            }
+        },
+        {
+            "name": "simulate_edit",
+            "description": "Simula uma edição PROPOSTA por VOCÊ em memória (net_delta) SEM tocar o disco e retorna o veredito safe/unsafe + os erros introduzidos e resolvidos (errors_introduced/errors_resolved). É o MESMO motor que rename/extract/move/safe_delete usam para decidir. Informe a edição de UMA das formas: 'new_content' (o conteúdo COMPLETO proposto do arquivo), 'edits' (lista de {start_line,end_line 1-indexed, start_col,end_col 0-indexed opcionais, new_text}) ou 'edit' (um WorkspaceEdit LSP cru). Use ANTES de aplicar para saber se a mudança quebra o build.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "caminho ABSOLUTO da raiz do projeto"},
+                    "file": {"type": "string", "description": "arquivo RELATIVO ao project"},
+                    "new_content": {"type": "string", "description": "conteúdo COMPLETO proposto do arquivo (substitui o arquivo inteiro)"},
+                    "edits": {"type": "array", "description": "lista de edições por range: {start_line,end_line (1-indexed), start_col,end_col (0-indexed, opcionais), new_text}",
+                        "items": {"type": "object"}},
+                    "edit": {"type": "object", "description": "alternativa avançada: um WorkspaceEdit LSP cru (changes/documentChanges)"}
+                },
+                "required": ["project", "file"]
+            }
+        },
+        {
+            "name": "preview_edit",
+            "description": "Mostra o que uma edição PROPOSTA por VOCÊ mudaria: o WorkspaceEdit resolvido + um diff unificado por arquivo + o blast (arquivos/edições tocados). READ-ONLY: não simula diagnostics nem escreve no disco (use simulate_edit p/ o veredito de segurança e safe_apply p/ aplicar). Mesma representação de edição do simulate_edit ('new_content' | 'edits' | 'edit').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "file": {"type": "string"},
+                    "new_content": {"type": "string", "description": "conteúdo COMPLETO proposto do arquivo"},
+                    "edits": {"type": "array", "description": "lista de edições por range (ver simulate_edit)", "items": {"type": "object"}},
+                    "edit": {"type": "object", "description": "WorkspaceEdit LSP cru (avançado)"}
+                },
+                "required": ["project", "file"]
+            }
+        },
+        {
+            "name": "safe_apply",
+            "description": "Aplica uma edição PROPOSTA por VOCÊ no disco SÓ SE net_delta<=0 (não introduz erros novos); caso contrário RECUSA e devolve os erros introduzidos SEM tocar o disco. Mesmo motor (simular→gate→apply) das demais tools de edição. Com verify_build=true roda o build da linguagem após aplicar e REVERTE se falhar (pega erros que o net_delta em memória não vê, ex.: cargo check). Mesma representação de edição do simulate_edit ('new_content' | 'edits' | 'edit').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "file": {"type": "string"},
+                    "new_content": {"type": "string", "description": "conteúdo COMPLETO proposto do arquivo"},
+                    "edits": {"type": "array", "description": "lista de edições por range (ver simulate_edit)", "items": {"type": "object"}},
+                    "edit": {"type": "object", "description": "WorkspaceEdit LSP cru (avançado)"},
+                    "verify_build": {"type": "boolean", "description": "roda o build da linguagem após aplicar e REVERTE se falhar"}
+                },
+                "required": ["project", "file"]
+            }
+        },
+        {
             "name": "doctor",
-            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Com smoke=true, roda um find_references REAL end-to-end e exige count>0 && stable (pega posição/warmup/escala que os checks estáticos não veem). Rode uma vez ao abrir um projeto novo.",
+            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python: além de 'sem config', pega config presente mas SEM include/venv). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Com smoke=true, roda um find_references REAL end-to-end (gate de warmup) e, como SONDA DE CONTAGEM, alerta (warning soft, não bloqueio) se um símbolo referenciável retorna 0-1 ref estável num projeto multi-arquivo — assinatura do bug pachamama (5 vs 61 refs). Veja o campo 'warnings' na resposta. Rode uma vez ao abrir um projeto novo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2226,6 +4257,15 @@ fn tools_schema() -> Value {
                 },
                 "required": ["project"]
             }
+        },
+        {
+            "name": "instructions",
+            "description": "Manual COMPLETO de uso do code-intel (fonte única da verdade; o campo `instructions` do initialize é um excerto curto deste texto). Puxe sob demanda quando precisar do guia inteiro: roteamento semântico vs. grep, confiar no gate de warmup (não reler), preview/simulate antes de safe_apply, blast_radius antes de editar amplo, safe_delete, grep-sweep pós-rename, loop de diagnostics de nível-projeto e setup via doctor. Sem argumentos.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
         }
     ])
 }
@@ -2240,8 +4280,21 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         "call_hierarchy" => tool_call_hierarchy(srv, args),
         "extract_function" => tool_extract_function(srv, args),
         "move_symbol" => tool_move_symbol(srv, args),
+        "organize_imports" => tool_organize_imports(srv, args),
+        "safe_delete" => tool_safe_delete(srv, args),
+        "replace_symbol_body" => tool_replace_symbol_body(srv, args),
+        "insert_before_symbol" => tool_insert_before_symbol(srv, args),
+        "insert_after_symbol" => tool_insert_after_symbol(srv, args),
+        "blast_radius" => tool_blast_radius(srv, args),
+        "quick_fix" => tool_quick_fix(srv, args),
+        "change_signature" => tool_change_signature(srv, args),
+        "move_file" => tool_move_file(srv, args),
+        "simulate_edit" => tool_simulate_edit(srv, args),
+        "preview_edit" => tool_preview_edit(srv, args),
+        "safe_apply" => tool_safe_apply(srv, args),
         "validate_build" => tool_validate_build(srv, args),
         "doctor" => tool_doctor(srv, args),
+        "instructions" => tool_instructions(),
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
     match res {
@@ -2497,7 +4550,10 @@ fn main() {
                 Some(json!({
                     "protocolVersion": pv,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "code-intel-mcp", "version": env!("CARGO_PKG_VERSION")}
+                    "serverInfo": {"name": "code-intel-mcp", "version": env!("CARGO_PKG_VERSION")},
+                    // G1: guidance portátil (todo cliente MCP herda). Excerto CURTO (C13); manual
+                    // completo via a tool `instructions` (mesma fonte, guidance::*).
+                    "instructions": guidance::SHORT_INSTRUCTIONS
                 }))
             }
             "tools/list" => Some(json!({"tools": tools_schema()})),
@@ -2553,6 +4609,61 @@ mod tests {
             base_name("RefundRedemptionHandler"),
             "RefundRedemptionHandler"
         );
+    }
+
+    // I1: clip_line NUNCA corta no meio de um char UTF-8 e anexa '…' quando trunca.
+    #[test]
+    fn clip_line_respects_utf8_boundary() {
+        assert_eq!(clip_line("abc", 10), "abc"); // curta: intacta
+        assert_eq!(clip_line("abcdef", 3), "abc…"); // truncada + reticências
+                                                    // multibyte: 5 'é' (2 bytes cada) truncado em 3 chars não pode cortar no meio do byte
+        let s = "ééééé";
+        let clipped = clip_line(s, 3);
+        assert_eq!(clipped, "ééé…");
+        assert!(clipped.is_char_boundary(clipped.len())); // string válida
+    }
+
+    // I1: format_location produz `at` (path:linha:col 1-indexed), `content` e ~2 linhas de contexto
+    // clampadas nos limites do arquivo, com prefixo de nº de linha e SEM a própria linha no contexto.
+    #[test]
+    fn format_location_content_and_context() {
+        let dir = std::env::temp_dir().join(format!("fmtloc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.ts");
+        std::fs::write(&f, "l0\nl1\nTARGET\nl3\nl4\n").unwrap();
+        let abs = f.to_string_lossy().to_string();
+        let root = dir.to_string_lossy().to_string();
+        let mut cache = SourceCache::default();
+        // linha 0-indexed 2 = "TARGET"; col 0
+        let loc = format_location(&mut cache, &root, &abs, 2, 0);
+        assert_eq!(loc["at"], json!("a.ts:3:1"));
+        assert_eq!(loc["content"], json!("TARGET"));
+        // contexto: linhas 1..=4 exceto a 3 → "1: l0","2: l1","4: l3","5: l4"
+        let ctx: Vec<String> = loc["context"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ctx, vec!["1: l0", "2: l1", "4: l3", "5: l4"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // I1: contexto clampa no TOPO do arquivo (linha 0 não tem 2 acima).
+    #[test]
+    fn format_location_clamps_at_file_start() {
+        let dir = std::env::temp_dir().join(format!("fmtloc2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("b.ts");
+        std::fs::write(&f, "first\nsecond\nthird\n").unwrap();
+        let abs = f.to_string_lossy().to_string();
+        let root = dir.to_string_lossy().to_string();
+        let mut cache = SourceCache::default();
+        let loc = format_location(&mut cache, &root, &abs, 0, 0);
+        assert_eq!(loc["content"], json!("first"));
+        let ctx = loc["context"].as_array().unwrap();
+        assert_eq!(ctx.len(), 2); // só as 2 linhas abaixo (nada acima da 1ª)
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -2737,6 +4848,30 @@ mod tests {
         assert!(ws_backend(Some("cobol")).is_err());
     }
 
+    // I2: doctor detecta config pyright INCOMPLETA (bug silencioso pachamama 5-vs-61).
+    #[test]
+    fn py_config_gaps_flags_missing_keys() {
+        // config completa (include + venv), com venv no disco → sem lacunas.
+        assert!(
+            py_config_gaps("{\"include\":[\"src\"],\"venv\":\".venv\"}", true).is_empty(),
+            "config completa não deve gerar lacuna"
+        );
+        // sem include → lacuna de include, mesmo sem venv no disco.
+        let g = py_config_gaps("{\"typeCheckingMode\":\"basic\"}", false);
+        assert_eq!(g.len(), 1);
+        assert!(g[0].starts_with("include"));
+        // include presente mas venv AUSENTE com virtualenv no disco → lacuna de venv.
+        let g = py_config_gaps("{\"include\":[\"src\"]}", true);
+        assert_eq!(g.len(), 1);
+        assert!(g[0].starts_with("venv"));
+        // include presente e SEM venv no disco → não cobra venv (não há imports de venv a resolver).
+        assert!(py_config_gaps("{\"include\":[\"src\"]}", false).is_empty());
+        // venvPath conta como venv (busca por "venv" cobre venv e venvPath).
+        assert!(py_config_gaps("{\"include\":[\".\"],\"venvPath\":\".\"}", true).is_empty());
+        // config vazia com venv no disco → as DUAS lacunas.
+        assert_eq!(py_config_gaps("", true).len(), 2);
+    }
+
     // Regressão do P1 (relatório pachamama, Python): basedpyright reporta símbolos DECORADOS na
     // linha do @decorator, não do identificador. A varredura pra frente deve achar o nome.
     #[test]
@@ -2785,6 +4920,225 @@ mod tests {
         ));
     }
 
+    // F3: ref_in_def separa a própria definição (linha dentro do range da declaração) das refs de uso.
+    #[test]
+    fn ref_in_def_distinguishes_definition_from_uses() {
+        let def = ((10u64, 0u64), (14u64, 1u64)); // declaração ocupa as linhas 10..=14
+        assert!(ref_in_def(10, def)); // linha do identificador (a própria def)
+        assert!(ref_in_def(12, def)); // dentro do corpo da declaração
+        assert!(ref_in_def(14, def)); // última linha da declaração
+        assert!(!ref_in_def(20, def)); // uso externo, abaixo
+        assert!(!ref_in_def(3, def)); // uso externo, acima
+    }
+
+    // F6: is_test_path particiona refs/callers em test vs produção (cobre TS/JS/Py/Rust/Dart/C#).
+    #[test]
+    fn is_test_path_partitions_test_vs_prod() {
+        // dir de teste
+        assert!(is_test_path("src/__tests__/widget.ts"));
+        assert!(is_test_path("packages/core/test/main.dart"));
+        assert!(is_test_path("tests/test_utils.py"));
+        // sufixos por arquivo
+        assert!(is_test_path("src/widget.test.ts"));
+        assert!(is_test_path("src/widget.spec.ts"));
+        assert!(is_test_path("mod_test.rs"));
+        assert!(is_test_path("WidgetTests.cs"));
+        assert!(is_test_path("test_helpers.py"));
+        // produção NÃO casa
+        assert!(!is_test_path("src/widget.ts"));
+        assert!(!is_test_path("packages/core/src/index.ts"));
+        assert!(!is_test_path("src/latest.ts")); // 'latest' não é 'test' (word-ish, mas stem não termina em 'test' isolado)
+    }
+
+    // F3: sym_full_range pega o `range` (declaração inteira), não o selectionRange (só o nome).
+    #[test]
+    fn sym_full_range_prefers_range_over_selection() {
+        let s = json!({
+            "name": "foo",
+            "range": {"start": {"line": 5, "character": 0}, "end": {"line": 9, "character": 1}},
+            "selectionRange": {"start": {"line": 5, "character": 9}, "end": {"line": 5, "character": 12}}
+        });
+        assert_eq!(sym_full_range(&s), ((5, 0), (9, 1)));
+        // fallback: SymbolInformation (só location.range)
+        let si = json!({"name": "bar",
+            "location": {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 20}}}});
+        assert_eq!(sym_full_range(&si), ((2, 0), (2, 20)));
+    }
+
+    // F1: build_workspace_edit aceita as 3 formas de edição e produz o MESMO shape (changes por URI).
+    #[test]
+    fn build_workspace_edit_accepts_all_forms() {
+        let dir = std::env::temp_dir().join(format!("bwe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("x.ts");
+        std::fs::write(&f, "const a = 1;\nconst b = 2;\n").unwrap();
+        let abs = f.to_string_lossy().to_string();
+        let uri = path_to_uri(&abs);
+
+        // (1) WorkspaceEdit cru é repassado como está.
+        let raw = json!({"edit": {"changes": {uri.clone(): [{"range": {"start":{"line":0,"character":0},"end":{"line":0,"character":1}}, "newText": "X"}]}}});
+        let e1 = build_workspace_edit(&raw, &abs, &uri).unwrap();
+        assert!(e1["changes"][&uri].is_array());
+
+        // (2) new_content vira um único edit cobrindo o arquivo inteiro.
+        let nc = json!({"new_content": "const a = 42;\n"});
+        let e2 = build_workspace_edit(&nc, &abs, &uri).unwrap();
+        assert_eq!(e2["changes"][&uri][0]["newText"], json!("const a = 42;\n"));
+
+        // (3) edits 1-indexed → TextEdit 0-indexed.
+        let ed = json!({"edits": [{"start_line": 2, "end_line": 2, "start_col": 6, "end_col": 7, "new_text": "b2"}]});
+        let e3 = build_workspace_edit(&ed, &abs, &uri).unwrap();
+        assert_eq!(e3["changes"][&uri][0]["range"]["start"]["line"], json!(1));
+        assert_eq!(e3["changes"][&uri][0]["newText"], json!("b2"));
+
+        // (3b) end_col omitido → substitui a LINHA INTEIRA (fim = nº de chars da linha), não insere.
+        let ed2 = json!({"edits": [{"start_line": 1, "new_text": "const a = 9;"}]});
+        let e4 = build_workspace_edit(&ed2, &abs, &uri).unwrap();
+        let r = &e4["changes"][&uri][0]["range"];
+        assert_eq!(r["start"]["character"], json!(0));
+        assert_eq!(r["end"]["line"], json!(0));
+        assert_eq!(r["end"]["character"], json!(12)); // "const a = 1;" = 12 chars → end exclusivo = 12
+
+        // sem nenhuma forma → erro acionável.
+        assert!(build_workspace_edit(&json!({}), &abs, &uri).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // F1: unified_diff emite hunk só sobre a região que difere (prefixo/sufixo comuns preservados).
+    #[test]
+    fn unified_diff_emits_minimal_hunk() {
+        assert!(unified_diff("a.ts", "same\n", "same\n").is_empty()); // igual → vazio
+        let d = unified_diff("a.ts", "l0\nOLD\nl2\n", "l0\nNEW\nl2\n");
+        assert!(d.iter().any(|l| l == "-OLD"));
+        assert!(d.iter().any(|l| l == "+NEW"));
+        // prefixo/sufixo comuns NÃO aparecem como +/-
+        assert!(!d
+            .iter()
+            .any(|l| l == "-l0" || l == "+l0" || l == "-l2" || l == "+l2"));
+    }
+
+    // F5: split_top_level respeita aninhamento e strings — não quebra em vírgula dentro de
+    // genérico/objeto/string.
+    #[test]
+    fn split_top_level_respects_nesting() {
+        assert_eq!(split_top_level("a, b, c"), vec!["a", " b", " c"]);
+        assert_eq!(split_top_level(""), Vec::<String>::new());
+        assert_eq!(split_top_level("  "), Vec::<String>::new());
+        // vírgula dentro de genérico não separa
+        assert_eq!(
+            split_top_level("x: Map<string, number>, y: number"),
+            vec!["x: Map<string, number>", " y: number"]
+        );
+        // vírgula dentro de string/objeto não separa
+        assert_eq!(
+            split_top_level("\"a, b\", { k: 1, j: 2 }"),
+            vec!["\"a, b\"", " { k: 1, j: 2 }"]
+        );
+        // trailing comma não vira item vazio
+        assert_eq!(split_top_level("a, b,"), vec!["a", " b"]);
+    }
+
+    // F5: paren_span acha o conteúdo entre os parênteses balanceados após o identificador.
+    #[test]
+    fn paren_span_finds_balanced_content() {
+        let s = "foo(a, b)";
+        let ie = "foo".len();
+        assert_eq!(paren_span(s, ie), Some((4, 8))); // "a, b"
+        assert_eq!(&s[4..8], "a, b");
+        // aninhado: para no ')' externo, não no interno
+        let s2 = "call(x, nested(1, 2), y)";
+        let (cs, ce) = paren_span(s2, "call".len()).unwrap();
+        assert_eq!(&s2[cs..ce], "x, nested(1, 2), y");
+        // sem parênteses → None
+        assert_eq!(paren_span("foo bar", 3), None);
+    }
+
+    // F5: apply_sig_op — add/remove/reorder sobre a lista, com erros honestos.
+    #[test]
+    fn apply_sig_op_add_remove_reorder() {
+        let items: Vec<String> = vec!["a: number".into(), "b: number".into()];
+        // add na decl usa 'param'; no call-site usa 'arg'
+        let add = json!({"op":"add","index":2,"param":"c: number","arg":"0"});
+        assert_eq!(
+            apply_sig_op(&items, &add, true).unwrap(),
+            vec!["a: number", "b: number", "c: number"]
+        );
+        let args: Vec<String> = vec!["1".into(), "2".into()];
+        assert_eq!(
+            apply_sig_op(&args, &add, false).unwrap(),
+            vec!["1", "2", "0"]
+        );
+        // remove
+        let rm = json!({"op":"remove","index":0});
+        assert_eq!(apply_sig_op(&items, &rm, true).unwrap(), vec!["b: number"]);
+        // reorder (permutação válida)
+        let ro = json!({"op":"reorder","order":[1,0]});
+        assert_eq!(
+            apply_sig_op(&items, &ro, true).unwrap(),
+            vec!["b: number", "a: number"]
+        );
+        // reorder inválido (não é permutação) → erro
+        assert!(apply_sig_op(&items, &json!({"op":"reorder","order":[0,0]}), true).is_err());
+        // remove fora do range → erro
+        assert!(apply_sig_op(&items, &json!({"op":"remove","index":9}), true).is_err());
+        // add no call-site sem 'arg' → erro (inseguro)
+        assert!(apply_sig_op(
+            &args,
+            &json!({"op":"add","index":0,"param":"c: number"}),
+            false
+        )
+        .is_err());
+    }
+
+    // F5: rewrite_list_at reescreve a lista completa (decl e call-site) end-to-end.
+    #[test]
+    fn rewrite_list_at_rewrites_decl_and_call() {
+        let decl = "function compute(a: number, b: number): number {";
+        let ie = "function compute".len();
+        let spec = json!({"op":"remove","index":1});
+        let (cs, ce, nt) = rewrite_list_at(decl, ie, &spec, true).unwrap();
+        assert_eq!(&decl[cs..ce], "a: number, b: number");
+        assert_eq!(nt, "a: number");
+        // call-site: compute(2, 3) -> compute(2)
+        let call = "return compute(2, 3);";
+        let ie2 = "return compute".len();
+        let (cs2, ce2, nt2) = rewrite_list_at(call, ie2, &spec, false).unwrap();
+        assert_eq!(&call[cs2..ce2], "2, 3");
+        assert_eq!(nt2, "2");
+    }
+
+    // F5: offset_to_pos é inverso de pos_to_offset (UTF-16 nas colunas).
+    #[test]
+    fn offset_to_pos_roundtrips() {
+        let text = "l0\nsecond line\ncafé x\n";
+        for &(l, c) in &[(0u64, 0u64), (1, 7), (2, 5)] {
+            let off = pos_to_offset(text, l, c);
+            assert_eq!(offset_to_pos(text, off), (l, c), "roundtrip @ {l}:{c}");
+        }
+    }
+
+    // F8: filter_edit_to_existing descarta edits sobre o arquivo movido (caminho antigo) e sobre
+    // arquivos inexistentes, mantendo os importers.
+    #[test]
+    fn filter_edit_drops_moved_and_missing() {
+        let dir = std::env::temp_dir().join(format!("mvf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let importer = dir.join("importer.ts");
+        std::fs::write(&importer, "import x from './old';\n").unwrap();
+        let moved = dir.join("old.ts"); // NÃO existe no disco (simula já movido)
+        let importer_abs = importer.to_string_lossy().to_string();
+        let moved_abs = moved.to_string_lossy().to_string();
+        let edit = json!({"changes": {
+            path_to_uri(&importer_abs): [{"range": {"start":{"line":0,"character":0},"end":{"line":0,"character":1}}, "newText":"X"}],
+            path_to_uri(&moved_abs): [{"range": {"start":{"line":0,"character":0},"end":{"line":0,"character":1}}, "newText":"Y"}],
+        }});
+        let filtered = filter_edit_to_existing(&edit, &moved_abs);
+        let by = edits_by_file(&filtered);
+        assert!(by.contains_key(&importer_abs), "importer mantido");
+        assert!(!by.contains_key(&moved_abs), "arquivo movido descartado");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn name_path_matches_class_and_field_unaffected() {
         assert!(name_path_matches(
@@ -2800,5 +5154,55 @@ mod tests {
             "RefundRedemptionHandler/HandleAsync(string x)",
             "ExecuteRefundAsync"
         ));
+    }
+
+    // G1: o campo `instructions` do initialize é um EXCERTO ENXUTO do MESMO manual servido pela tool
+    // `instructions` (fonte única — C11) e fica CURTO (C13). Também garante que a tool devolve o
+    // manual completo.
+    #[test]
+    fn instructions_short_is_trimmed_excerpt_of_full() {
+        let short = guidance::SHORT_INSTRUCTIONS;
+        let full = guidance::FULL_MANUAL;
+        assert!(!short.is_empty(), "excerto curto não pode ser vazio");
+        assert!(!full.is_empty(), "manual completo não pode ser vazio");
+        // C13: o excerto do initialize é bem menor que o manual completo (enviado toda sessão).
+        assert!(
+            short.len() < full.len(),
+            "SHORT ({}) deve ser menor que FULL ({})",
+            short.len(),
+            full.len()
+        );
+        // aponta para a tool que serve o manual completo (mesma fonte da verdade).
+        assert!(
+            short.contains("instructions"),
+            "excerto aponta para a tool `instructions`"
+        );
+        // ambos carregam as regras de ouro (mesmo conteúdo, um é recorte do outro). Case-insensitive
+        // porque o manual usa "WARMUP" em caixa alta ("GATE DE WARMUP").
+        let (slow, flow) = (short.to_lowercase(), full.to_lowercase());
+        for kw in ["grep", "warmup", "net_delta", "blast_radius", "safe_delete"] {
+            assert!(slow.contains(kw), "excerto curto deve mencionar '{kw}'");
+            assert!(flow.contains(kw), "manual completo deve mencionar '{kw}'");
+        }
+    }
+
+    // G1: a tool `instructions` devolve o manual completo (fonte única) + a nota de excerto.
+    #[test]
+    fn instructions_tool_returns_full_manual() {
+        let v = tool_instructions().expect("instructions ok");
+        assert_eq!(v["manual"].as_str().unwrap(), guidance::FULL_MANUAL);
+        assert!(v["note"].as_str().unwrap().contains("excerto"));
+    }
+
+    // G1: a superfície é de 23 tools (22 anteriores + `instructions`), todas com nome+schema.
+    #[test]
+    fn tools_schema_has_23_tools_incl_instructions() {
+        let schema = tools_schema();
+        let arr = schema.as_array().expect("schema é array");
+        assert_eq!(arr.len(), 23, "23 tools no total (22 + instructions)");
+        assert!(
+            arr.iter().any(|t| t["name"] == "instructions"),
+            "a tool `instructions` está no schema"
+        );
     }
 }

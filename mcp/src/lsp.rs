@@ -167,7 +167,10 @@ impl LspClient {
                             "dataSupport": true
                         }
                     },
-                    "workspace": {"workspaceFolders": true, "configuration": true, "applyEdit": true}
+                    "workspace": {"workspaceFolders": true, "configuration": true, "applyEdit": true,
+                        // F8 move_file: precisamos que o server anuncie willRename p/ receber o
+                        // WorkspaceEdit que conserta os importers ao mover um arquivo.
+                        "fileOperations": {"dynamicRegistration": true, "willRename": true, "didRename": true}}
                 }
             }),
             10_000,

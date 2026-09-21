@@ -1,6 +1,6 @@
 [package]
 name = "code-intel-mcp"
-version = "0.7.7"
+version = "0.8.0"
 edition = "2021"
 description = "MCP server for semantic code operations (rename/move/extract) over real language servers — 'an IDE in the LLM's hands'"
 license = "MIT"

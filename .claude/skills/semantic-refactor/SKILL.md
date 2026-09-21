@@ -5,29 +5,25 @@ description: Use ao renomear, mover, extrair ou deletar SÍMBOLOS de código (cl
 
 # Refactoring semântico (não use grep/sed para renomear símbolos)
 
-Este projeto expõe o MCP `code-intel` com operações **semânticas** de código. Renomear/mover/
-deletar um símbolo com `grep`+`sed` (texto) é **perigoso**: corrompe strings literais, comentários
-e outros símbolos com o mesmo nome — e o pior é que muitas vezes **ainda compila** (bug silencioso).
+> **Fonte da verdade = o servidor.** A orientação de uso completa vive **no próprio MCP `code-intel`**
+> (é portátil a qualquer cliente, não só ao Claude Code). Puxe-a com a tool **`instructions`** do
+> `code-intel` — ela traz o manual inteiro: roteamento grep-vs-semântico, confiar no gate de warmup,
+> preview/simulate antes de aplicar, `blast_radius` antes de editar amplo, `safe_delete`, grep-sweep
+> pós-rename e o loop de diagnostics. Esta skill é só um **ponteiro** para não duplicar (e divergir
+> de) aquele texto.
 
-## Regras
+## O essencial (o resto está na tool `instructions`)
 
-1. **Nunca** renomeie um símbolo com edição de texto (Edit/sed em cima de todas as ocorrências
-   de um nome). Use `rename_symbol` do MCP `code-intel`.
-2. **Antes** de renomear/deletar, chame `find_references` para ver o alcance real (e confirme que
-   o resultado veio `stable: true` — senão o índice ainda está aquecendo).
-3. **Ao aplicar**, use `rename_symbol` com `apply: true`. Em Rust (ou quando quiser garantia de
-   build), adicione `verify_build: true` — aplica só se o build passar, senão reverte.
-4. Para achar "método dentro de classe", use `find_symbol` (name_path `Classe/metodo`) ou
-   `document_symbols`; não adivinhe posição por texto.
-5. Extrair função / mover símbolo: `extract_function` / `move_symbol` (não recorte-e-cole à mão).
+- **Nunca** renomeie/mova/delete um símbolo com edição de texto (Edit/sed sobre as ocorrências de um
+  nome): corrompe strings, comentários e homônimos — e muitas vezes **ainda compila** (bug
+  silencioso). Use as tools semânticas do `code-intel` (`rename_symbol`, `move_symbol`,
+  `extract_function`, `safe_delete`, `find_symbol`/`document_symbols`).
+- **Confie no resultado do server** (passa pelo gate de warmup e mede o `net_delta`): confirme
+  `stable: true` e **não releia** arquivos só para "conferir" referências de código.
+- **Grep-sweep pós-rename** é o único caso em que o grep textual entra: varrer o nome **antigo**
+  apenas em comentários/strings/docs/config (que `find_references` ignora de propósito) e **perguntar
+  antes de tocar**. Detalhes e a justificativa de por que isso não contradiz "confie no semântico"
+  estão no manual da tool `instructions`.
 
-## Fluxo típico (rename)
-
-```
-find_references(project, file, symbol)         # veja o alcance; confirme stable:true
-rename_symbol(project, file, symbol, new_name, apply:true, verify_build:true)
-```
-
-O servidor cuida do gate de warmup (nunca conta referências parciais), do `net_delta` (só aplica
-se não introduzir erros) e da validação de build. Você decide **o quê**; a ferramenta garante a
-precisão mecânica.
+Chame `instructions` (do `code-intel`) sempre que precisar do guia completo. Você decide **o quê**;
+a ferramenta garante a precisão mecânica e confere o resultado.

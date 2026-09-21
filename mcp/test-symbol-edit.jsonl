@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"replace_symbol_body","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/symbol-edit-ts","file":"src/core.ts","symbol":"greet","text":"export function greet(name: string): string {\n  return `hello ${name}`;\n}"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"replace_symbol_body","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/symbol-edit-ts","file":"src/core.ts","symbol":"greet","text":"export function greet(name: string): string {\n  return `hello ${name}`;\n}","apply":true}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"insert_after_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/symbol-edit-ts","file":"src/core.ts","symbol":"greet","text":"\nexport function farewell(name: string): string {\n  return `bye ${name}`;\n}"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"insert_before_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/symbol-edit-ts","file":"src/core.ts","symbol":"greet","text":"// greet builds a salutation"}}}

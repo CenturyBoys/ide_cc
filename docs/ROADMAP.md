@@ -33,6 +33,7 @@ mudança correta**.
 | **2c. Refactorings** | extract_function, move_symbol (codeAction→resolve) | ✅ **concluída** |
 | **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
 | **5. Otimização** | **validação ✅ · frescor ✅ · cache entre sessões ✅** · warmup dirigido, paralelismo, telemetria, RAM | 🟡 **em curso** |
+| **6. Skills & Features** | contrato de saída · organize_imports · safe_delete · net_delta produtizado · edições por símbolo · blast_radius · quick_fix · change_signature · move_file · guidance portátil | ✅ **CONCLUÍDA (2026-09-21)** |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
 
@@ -132,6 +133,28 @@ Passos previstos (branch `feature/phase-4-python`):
 
 Resto da Fase 5 (pendente): RAM residente por server, warmup dirigido (pré-abrir tsconfigs),
 paralelismo, telemetria de tempo por operação.
+
+### Fase 6 — Skills & Features: CONCLUÍDA (2026-09-21)
+
+Origem: pesquisa de 2 etapas (concorrentes + internet) → `.aux-files/PLANO-SKILLS-FEATURES.md`
+(plano + análise de conflito C1–C13). Executada com agentes; Rust sequencial (mesmo crate),
+skills em paralelo; CHANGELOG/ROADMAP consolidados ao final. **Superfície de tools 10 → 23;
+`cargo test` 42 verde.**
+
+- **Utilização (skills + guidance):** 3 skills novas (`diagnostics-fix-loop`, `context-pack-by-symbol`;
+  regras grep-vs-semântico + rename-grep-sweep) — depois **centralizadas no server** (G1): campo
+  `instructions` no `initialize` + tool `instructions` (fonte única `mod guidance`), herdada por
+  QUALQUER cliente MCP (Codex/Cursor/Cline/Zed). `SKILL.md` + novo `AGENTS.md` viram ponteiros finos
+  (sem drift, C11). Decisão do usuário: guidance portátil server-side é a direção principal.
+- **Edição segura (features):** `organize_imports`, `safe_delete`, `simulate_edit`/`preview_edit`/
+  `safe_apply` (net_delta produtizado + núcleo `verify_and_apply` consolidado), `replace_symbol_body`/
+  `insert_before_symbol`/`insert_after_symbol`, `blast_radius` (composto), `quick_fix` (dirigido),
+  `change_signature` (hand-built cross-caller onde o LSP não oferece — maior moat), `move_file`
+  (fixup de imports + revert anti basedpyright #1888).
+- **Fundações:** I1 contrato de saída (`path:linha:content` + contexto → menos re-leituras);
+  I2 `doctor` sonda refs + config incompleta (pega o bug silencioso pachamama proativo).
+- **Backlog restante** (em `.aux-files/`): tornar `.mcp.json` portátil (paths absolutos → relativos/
+  descobertos) para distribuição a outros clientes; documentar o snippet do Codex no README.
 
 ### Experimento A/B — "com e sem a camada" (2026-09-18)
 
