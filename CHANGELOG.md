@@ -6,6 +6,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-21
+
+### Changed
+- **`.mcp.json` portátil** (sem caminho por máquina): passa a apontar para o launcher
+  `scripts/code-intel-mcp.sh` via `${CLAUDE_PROJECT_DIR:-.}/scripts/code-intel-mcp.sh`. O launcher
+  se auto-localiza e resolve os language servers (tsgo/vtsls/basedpyright no `node_modules` do repo;
+  dart/rust-analyzer/csharp-ls no PATH; `DOTNET_ROOT` em `~/.dotnet`), respeitando overrides por env.
+  Snippet do Codex (AGENTS.md) e README atualizados para o mesmo launcher.
+
 ## [0.8.0] - 2026-09-21
 
 > Lote "Skills & Features" (2026-09-21) — a partir da pesquisa de 2 etapas (concorrentes + internet)
@@ -396,7 +405,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...v0.8.0
 [0.7.7]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.5...v0.7.6
