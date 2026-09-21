@@ -387,13 +387,7 @@ const MAX_LINE_CHARS: usize = 200;
 // `col0` é a coluna 0-indexed (opcional; vira 1-indexed no `at`). As linhas de contexto vêm
 // prefixadas com o número da linha ("42: código") para o modelo ancorar sem re-ler o arquivo.
 // UTF-8-safe (clip_line respeita a borda de char); clampa nos limites do arquivo.
-fn format_location(
-    cache: &mut SourceCache,
-    root: &str,
-    abs: &str,
-    line0: u64,
-    col0: u64,
-) -> Value {
+fn format_location(cache: &mut SourceCache, root: &str, abs: &str, line0: u64, col0: u64) -> Value {
     let lines = cache.lines(abs);
     let idx = line0 as usize;
     let content = lines.get(idx).map(|s| clip_line(s, MAX_LINE_CHARS));
@@ -409,7 +403,11 @@ fn format_location(
         .skip(start)
         .filter(|(i, _)| *i != idx)
     {
-        context.push(json!(format!("{}: {}", i + 1, clip_line(l, MAX_LINE_CHARS))));
+        context.push(json!(format!(
+            "{}: {}",
+            i + 1,
+            clip_line(l, MAX_LINE_CHARS)
+        )));
     }
     let rel_path = rel(root, &path_to_uri(abs));
     json!({
@@ -1372,7 +1370,8 @@ fn build_workspace_edit(a: &Value, abs: &str, uri: &str) -> Result<Value, String
         let lines: Vec<&str> = orig.split('\n').collect();
         let end_line = lines.len().saturating_sub(1) as u64;
         let end_col = lines.last().map(|l| l.chars().count() as u64).unwrap_or(0);
-        let range = json!({"start":{"line":0,"character":0},"end":{"line":end_line,"character":end_col}});
+        let range =
+            json!({"start":{"line":0,"character":0},"end":{"line":end_line,"character":end_col}});
         return Ok(json!({"changes": {uri: [{"range": range, "newText": nc}]}}));
     }
     // (3) edits: ranges 1-indexed (humano) → TextEdits LSP (0-indexed). Padrões pensados p/ o caso
@@ -1387,7 +1386,9 @@ fn build_workspace_edit(a: &Value, abs: &str, uri: &str) -> Result<Value, String
         let flines: Vec<&str> = orig.split('\n').collect();
         let mut tes = vec![];
         for e in arr {
-            let sl = e["start_line"].as_u64().ok_or("edit sem 'start_line' (1-indexed)")?;
+            let sl = e["start_line"]
+                .as_u64()
+                .ok_or("edit sem 'start_line' (1-indexed)")?;
             let el = e["end_line"].as_u64().unwrap_or(sl);
             let sc = e["start_col"].as_u64().unwrap_or(0);
             // end_col ausente → fim (em chars) da end_line no disco = "substitui a linha inteira".
@@ -1426,7 +1427,8 @@ fn unified_diff(rel_path: &str, old: &str, new: &str) -> Vec<String> {
     }
     // sufixo comum (sem invadir o prefixo)
     let mut suf = 0usize;
-    while suf < a.len() - pre && suf < b.len() - pre && a[a.len() - 1 - suf] == b[b.len() - 1 - suf] {
+    while suf < a.len() - pre && suf < b.len() - pre && a[a.len() - 1 - suf] == b[b.len() - 1 - suf]
+    {
         suf += 1;
     }
     let mut out = vec![format!("--- {rel_path}"), format!("+++ {rel_path}")];
@@ -1475,7 +1477,11 @@ fn tool_simulate_edit(srv: &Server, a: &Value) -> Result<Value, String> {
     let mut result = simulate(&client, &edit, &project, build_lang(file))?;
     result["operation"] = json!("simulate_edit");
     result["file"] = json!(file);
-    result["verdict"] = json!(if result["safe"].as_bool().unwrap_or(false) { "safe" } else { "unsafe" });
+    result["verdict"] = json!(if result["safe"].as_bool().unwrap_or(false) {
+        "safe"
+    } else {
+        "unsafe"
+    });
     Ok(result)
 }
 
@@ -1528,7 +1534,11 @@ fn tool_safe_apply(srv: &Server, a: &Value) -> Result<Value, String> {
     let mut result = apply_if_safe(&client, &edit, verify_build, &project, build_lang(file))?;
     result["operation"] = json!("safe_apply");
     result["file"] = json!(file);
-    result["verdict"] = json!(if result["safe"].as_bool().unwrap_or(false) { "safe" } else { "unsafe" });
+    result["verdict"] = json!(if result["safe"].as_bool().unwrap_or(false) {
+        "safe"
+    } else {
+        "unsafe"
+    });
     Ok(result)
 }
 
@@ -1876,11 +1886,7 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
 // ações `source.*` operam sobre o ARQUIVO INTEIRO (não uma seleção) e o range é o documento todo.
 // Pede vários kinds `source.*`; casa a 1ª ação cujo `kind` bata (nem todo server rotula igual) e
 // resolve o edit se for lazy. Retorna Err "unsupported" quando o backend não oferece a ação.
-fn source_action_edit(
-    client: &LspClient,
-    uri: &str,
-    kinds: &[&str],
-) -> Result<Value, String> {
+fn source_action_edit(client: &LspClient, uri: &str, kinds: &[&str]) -> Result<Value, String> {
     // range = documento inteiro (source actions são file-scoped). Usa um range grande e seguro.
     let range = json!({"start":{"line":0,"character":0},"end":{"line":u32::MAX,"character":0}});
     let start = Instant::now();
@@ -1902,7 +1908,9 @@ fn source_action_edit(
         .iter()
         .find(|a| {
             a["kind"].as_str().map_or(false, |k| {
-                kinds.iter().any(|want| k == *want || k.starts_with(&format!("{want}.")))
+                kinds
+                    .iter()
+                    .any(|want| k == *want || k.starts_with(&format!("{want}.")))
             })
         })
         .or_else(|| actions.first())
@@ -2148,16 +2156,20 @@ fn tool_safe_delete(srv: &Server, a: &Value) -> Result<Value, String> {
 
 // Modo da edição por símbolo (o range LSP é derivado do full_range da declaração).
 enum SymEditMode {
-    Replace,       // substitui o range completo da declaração pelo texto
-    InsertBefore,  // insere texto ANTES da declaração (no início da 1ª linha da decl)
-    InsertAfter,   // insere texto DEPOIS da declaração (após a última linha da decl)
+    Replace,      // substitui o range completo da declaração pelo texto
+    InsertBefore, // insere texto ANTES da declaração (no início da 1ª linha da decl)
+    InsertAfter,  // insere texto DEPOIS da declaração (após a última linha da decl)
 }
 
 fn symbol_scoped_edit(srv: &Server, a: &Value, mode: SymEditMode) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
-    let symbol = a["symbol"].as_str().ok_or("faltou 'symbol' (nome ou name_path)")?;
-    let text = a["text"].as_str().ok_or("faltou 'text' (o conteúdo a inserir/substituir)")?;
+    let symbol = a["symbol"]
+        .as_str()
+        .ok_or("faltou 'symbol' (nome ou name_path)")?;
+    let text = a["text"]
+        .as_str()
+        .ok_or("faltou 'text' (o conteúdo a inserir/substituir)")?;
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
 
@@ -2181,7 +2193,11 @@ fn symbol_scoped_edit(srv: &Server, a: &Value, mode: SymEditMode) -> Result<Valu
         ),
         // Insere no início da declaração; garante uma quebra de linha para não colar no símbolo.
         SymEditMode::InsertBefore => {
-            let nt = if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") };
+            let nt = if text.ends_with('\n') {
+                text.to_string()
+            } else {
+                format!("{text}\n")
+            };
             (
                 "insert_before_symbol",
                 json!({"start":{"line":sl,"character":0},"end":{"line":sl,"character":0}}),
@@ -2190,7 +2206,11 @@ fn symbol_scoped_edit(srv: &Server, a: &Value, mode: SymEditMode) -> Result<Valu
         }
         // Insere logo após a última linha da declaração (coluna 0 da linha seguinte).
         SymEditMode::InsertAfter => {
-            let nt = if text.starts_with('\n') { text.to_string() } else { format!("\n{text}") };
+            let nt = if text.starts_with('\n') {
+                text.to_string()
+            } else {
+                format!("\n{text}")
+            };
             (
                 "insert_after_symbol",
                 json!({"start":{"line":el,"character":ec},"end":{"line":el,"character":ec}}),
@@ -2256,7 +2276,10 @@ fn is_test_path(rel_path: &str) -> bool {
     // (o file veio em lowercase de `p`, então usamos o nome ORIGINAL para checar a maiúscula.)
     for suf in ["tests", "test", "spec"] {
         if let Some(orig_file) = rel_path.rsplit('/').next() {
-            let orig_stem = orig_file.rsplit_once('.').map(|(s, _)| s).unwrap_or(orig_file);
+            let orig_stem = orig_file
+                .rsplit_once('.')
+                .map(|(s, _)| s)
+                .unwrap_or(orig_file);
             if orig_stem.len() > suf.len()
                 && orig_stem.to_lowercase().ends_with(suf)
                 && orig_stem
@@ -2298,8 +2321,8 @@ fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
     let root = client.root().to_string();
     let mut cache = SourceCache::default();
     let def_abs = uri_to_path(&uri);
-    let ((dsl, _), (del, _)) = find_decl_range(&client, &abs, symbol, l)
-        .unwrap_or(((l, 0), (l, 0))); // fallback: só a linha resolvida
+    let ((dsl, _), (del, _)) =
+        find_decl_range(&client, &abs, symbol, l).unwrap_or(((l, 0), (l, 0))); // fallback: só a linha resolvida
 
     // Particiona as REFERÊNCIAS (exclui a própria declaração) em test vs não-test (formato I1).
     let mut refs_test: Vec<Value> = vec![];
@@ -2432,7 +2455,8 @@ fn quickfix_edit(
     diags: &[Value],
     prefer_title: Option<&str>,
 ) -> Result<Value, String> {
-    let range = json!({"start":{"line":line0,"character":0},"end":{"line":line0,"character":u32::MAX}});
+    let range =
+        json!({"start":{"line":line0,"character":0},"end":{"line":line0,"character":u32::MAX}});
     let res = client.request(
         "textDocument/codeAction",
         json!({"textDocument":{"uri":uri},"range":range,
@@ -2448,13 +2472,15 @@ fn quickfix_edit(
     };
     let chosen = prefer_title
         .and_then(|t| {
-            actions.iter().find(|a| {
-                is_quickfix(a) && a["title"].as_str().map_or(false, |s| s.contains(t))
-            })
+            actions
+                .iter()
+                .find(|a| is_quickfix(a) && a["title"].as_str().map_or(false, |s| s.contains(t)))
         })
         .or_else(|| actions.iter().find(|a| is_quickfix(a)))
         .cloned()
-        .ok_or_else(|| "nenhum quick_fix disponível para o diagnóstico nesta posição".to_string())?;
+        .ok_or_else(|| {
+            "nenhum quick_fix disponível para o diagnóstico nesta posição".to_string()
+        })?;
     // resolve se o edit for lazy (data sem edit)
     let action = if chosen.get("edit").map(|e| !e.is_null()).unwrap_or(false) {
         chosen
@@ -2471,7 +2497,9 @@ fn quickfix_edit(
 fn tool_quick_fix(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
-    let line = a["line"].as_u64().ok_or("faltou 'line' (1-indexed) do diagnóstico")?;
+    let line = a["line"]
+        .as_u64()
+        .ok_or("faltou 'line' (1-indexed) do diagnóstico")?;
     let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
     let prefer_title = a["prefer_title"].as_str(); // opcional: escolhe a ação por título
     let line0 = line.saturating_sub(1); // 1-indexed (humano) → 0-indexed (LSP)
@@ -2549,7 +2577,11 @@ fn paren_span(s: &str, open_from: usize) -> Option<(usize, usize)> {
     let mut i = open_from;
     while i < b.len() && b[i] != b'(' {
         // só espaços/identificador entre o nome e o '(' — se topar com algo estranho, aborta.
-        if !(b[i] as char).is_whitespace() && b[i] != b'(' && b[i].is_ascii_punctuation() && b[i] != b'_' {
+        if !(b[i] as char).is_whitespace()
+            && b[i] != b'('
+            && b[i].is_ascii_punctuation()
+            && b[i] != b'_'
+        {
             // permite '<...>' de genéricos entre nome e '(' (raro em call-sites; comum em decls TS)
             if b[i] == b'<' {
                 if let Some(close) = balanced_close(s, i, b'<', b'>') {
@@ -2660,7 +2692,9 @@ fn split_top_level(content: &str) -> Vec<String> {
 // `is_decl` escolhe o texto: `param` para a declaração, `arg` para o call-site. Preserva o trim/
 // espaçamento original re-juntando com ", ". Erros são honestos (índice fora do range, etc.).
 fn apply_sig_op(items: &[String], spec: &Value, is_decl: bool) -> Result<Vec<String>, String> {
-    let op = spec["op"].as_str().ok_or("spec sem 'op' (add|remove|reorder)")?;
+    let op = spec["op"]
+        .as_str()
+        .ok_or("spec sem 'op' (add|remove|reorder)")?;
     let mut out: Vec<String> = items.iter().map(|s| s.trim().to_string()).collect();
     match op {
         "add" => {
@@ -2669,7 +2703,9 @@ fn apply_sig_op(items: &[String], spec: &Value, is_decl: bool) -> Result<Vec<Str
                 return Err(format!("add.index {idx} fora do range (0..={})", out.len()));
             }
             let text = if is_decl {
-                spec["param"].as_str().ok_or("add exige 'param' (texto do parâmetro na declaração)")?
+                spec["param"]
+                    .as_str()
+                    .ok_or("add exige 'param' (texto do parâmetro na declaração)")?
             } else {
                 // add exige 'arg' — sem saber o que os callers passam, adicionar é inseguro.
                 spec["arg"].as_str().ok_or("add exige 'arg' (o valor a passar nos call-sites) — sem ele o caller não compila")?
@@ -2677,9 +2713,14 @@ fn apply_sig_op(items: &[String], spec: &Value, is_decl: bool) -> Result<Vec<Str
             out.insert(idx, text.to_string());
         }
         "remove" => {
-            let idx = spec["index"].as_u64().ok_or("remove exige 'index' (0-indexed)")? as usize;
+            let idx = spec["index"]
+                .as_u64()
+                .ok_or("remove exige 'index' (0-indexed)")? as usize;
             if idx >= out.len() {
-                return Err(format!("remove.index {idx} fora do range (0..{})", out.len()));
+                return Err(format!(
+                    "remove.index {idx} fora do range (0..{})",
+                    out.len()
+                ));
             }
             out.remove(idx);
         }
@@ -2703,7 +2744,11 @@ fn apply_sig_op(items: &[String], spec: &Value, is_decl: bool) -> Result<Vec<Str
             }
             out = order.into_iter().map(|i| out[i].clone()).collect();
         }
-        other => return Err(format!("op '{other}' desconhecida (use add|remove|reorder)")),
+        other => {
+            return Err(format!(
+                "op '{other}' desconhecida (use add|remove|reorder)"
+            ))
+        }
     }
     Ok(out)
 }
@@ -2712,7 +2757,12 @@ fn apply_sig_op(items: &[String], spec: &Value, is_decl: bool) -> Result<Vec<Str
 // identificador chamado/declarado) no texto `s`, aplicando a spec. Retorna (byte_start, byte_end,
 // novo_texto) do CONTEÚDO entre parênteses. None se não achar a lista (posição não é uma chamada/
 // declaração com parênteses balanceados) — o chamador trata como "não editável aqui".
-fn rewrite_list_at(s: &str, ident_end: usize, spec: &Value, is_decl: bool) -> Option<(usize, usize, String)> {
+fn rewrite_list_at(
+    s: &str,
+    ident_end: usize,
+    spec: &Value,
+    is_decl: bool,
+) -> Option<(usize, usize, String)> {
     let (cs, ce) = paren_span(s, ident_end)?;
     let content = &s[cs..ce];
     let items = split_top_level(content);
@@ -2723,7 +2773,9 @@ fn rewrite_list_at(s: &str, ident_end: usize, spec: &Value, is_decl: bool) -> Op
 fn tool_change_signature(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
-    let symbol = a["symbol"].as_str().ok_or("faltou 'symbol' (nome ou name_path da função/método)")?;
+    let symbol = a["symbol"]
+        .as_str()
+        .ok_or("faltou 'symbol' (nome ou name_path da função/método)")?;
     let spec = a.get("spec").filter(|s| !s.is_null()).ok_or(
         "faltou 'spec' (a mudança: {op:add,index,param,arg} | {op:remove,index} | {op:reorder,order:[..]})",
     )?;
@@ -2731,8 +2783,16 @@ fn tool_change_signature(srv: &Server, a: &Value) -> Result<Value, String> {
     let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (mede e reverte)
 
     // Validação básica da spec ANTES de qualquer trabalho pesado (falha honesta e barata).
-    let op = spec["op"].as_str().ok_or("spec sem 'op' (add|remove|reorder)")?;
-    if op == "add" && spec.get("arg").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+    let op = spec["op"]
+        .as_str()
+        .ok_or("spec sem 'op' (add|remove|reorder)")?;
+    if op == "add"
+        && spec
+            .get("arg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty()
+    {
         return Ok(json!({
             "operation": "change_signature", "symbol": symbol,
             "applied": false, "safe": false, "unsupported": true, "error": "unsafe_add",
@@ -2939,8 +2999,12 @@ fn tsserver_rename_edit(client: &LspClient, old_abs: &str, new_abs: &str) -> Res
 
 fn tool_move_file(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
-    let source = a["source"].as_str().ok_or("faltou 'source' (caminho relativo do arquivo a mover)")?;
-    let dest = a["dest"].as_str().ok_or("faltou 'dest' (caminho relativo de destino)")?;
+    let source = a["source"]
+        .as_str()
+        .ok_or("faltou 'source' (caminho relativo do arquivo a mover)")?;
+    let dest = a["dest"]
+        .as_str()
+        .ok_or("faltou 'dest' (caminho relativo de destino)")?;
     let apply = a["apply"].as_bool().unwrap_or(false); // false = preview (não move nem escreve)
     let verify_build = a["verify_build"].as_bool().unwrap_or(false);
 
@@ -3044,7 +3108,13 @@ fn tool_move_file(srv: &Server, a: &Value) -> Result<Value, String> {
     // server pode ter incluído; o arquivo não está mais lá). Mantém só edits em arquivos existentes.
     let filtered = filter_edit_to_existing(&import_edit, &src_abs);
 
-    let apply_res = apply_if_safe(&client, &filtered, verify_build, project, build_lang(source));
+    let apply_res = apply_if_safe(
+        &client,
+        &filtered,
+        verify_build,
+        project,
+        build_lang(source),
+    );
     match apply_res {
         Ok(mut result) => {
             let applied_ok = result["applied"].as_bool().unwrap_or(false);
@@ -3072,7 +3142,9 @@ fn tool_move_file(srv: &Server, a: &Value) -> Result<Value, String> {
         Err(e) => {
             // erro duro no apply → reverte o move para deixar o disco consistente.
             let _ = std::fs::rename(&dest_abs, &src_abs);
-            Err(format!("move_file: falha ao aplicar os edits de import ({e}); o move foi revertido"))
+            Err(format!(
+                "move_file: falha ao aplicar os edits de import ({e}); o move foi revertido"
+            ))
         }
     }
 }
@@ -3637,11 +3709,13 @@ fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
                     "ref_probe": {"ok": true, "count": refs.len()}});
             }
             if stable && file_scale >= 3 && low_probe.is_none() {
-                low_probe = Some(json!({"symbol": ident, "file": rel_file, "count": refs.len(),
+                low_probe = Some(
+                    json!({"symbol": ident, "file": rel_file, "count": refs.len(),
                     "stable": true,
                     "hint": format!(
                         "HINT (não é erro): o referenciável '{ident}' retornou só {} ref(s) ESTÁVEL num projeto com múltiplos arquivos. Pode ser símbolo realmente sem uso — OU config de workspace faltando fazendo find_references sair INCOMPLETO em silêncio (ex.: Python sem [tool.basedpyright] include/venv: pachamama deu 5 vs 61 refs, stable:true nos dois). Confirme com um grep e veja docs/LANGUAGE-SETUP.md.",
-                        refs.len())}));
+                        refs.len())}),
+                );
             }
         }
         if start.elapsed().as_millis() + 2_000 >= total_budget {
@@ -3819,10 +3893,15 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         if e["workspace_config"]["ok"].as_bool().unwrap_or(true)
             && !e["workspace_config"]["issue"].is_null()
         {
-            warnings.push(json!({"lang": e["lang"].clone(), "kind": "config_incompleta",
-                "detail": e["workspace_config"]["issue"].clone()}));
+            warnings.push(
+                json!({"lang": e["lang"].clone(), "kind": "config_incompleta",
+                "detail": e["workspace_config"]["issue"].clone()}),
+            );
         }
-        if e["smoke"]["ref_probe"]["low_ref"].as_bool().unwrap_or(false) {
+        if e["smoke"]["ref_probe"]["low_ref"]
+            .as_bool()
+            .unwrap_or(false)
+        {
             warnings.push(json!({"lang": e["lang"].clone(), "kind": "ref_count_baixa",
                 "detail": e["smoke"]["ref_probe"]["hint"].clone()}));
         }
@@ -4537,7 +4616,7 @@ mod tests {
     fn clip_line_respects_utf8_boundary() {
         assert_eq!(clip_line("abc", 10), "abc"); // curta: intacta
         assert_eq!(clip_line("abcdef", 3), "abc…"); // truncada + reticências
-        // multibyte: 5 'é' (2 bytes cada) truncado em 3 chars não pode cortar no meio do byte
+                                                    // multibyte: 5 'é' (2 bytes cada) truncado em 3 chars não pode cortar no meio do byte
         let s = "ééééé";
         let clipped = clip_line(s, 3);
         assert_eq!(clipped, "ééé…");
@@ -4933,7 +5012,9 @@ mod tests {
         assert!(d.iter().any(|l| l == "-OLD"));
         assert!(d.iter().any(|l| l == "+NEW"));
         // prefixo/sufixo comuns NÃO aparecem como +/-
-        assert!(!d.iter().any(|l| l == "-l0" || l == "+l0" || l == "-l2" || l == "+l2"));
+        assert!(!d
+            .iter()
+            .any(|l| l == "-l0" || l == "+l0" || l == "-l2" || l == "+l2"));
     }
 
     // F5: split_top_level respeita aninhamento e strings — não quebra em vírgula dentro de
@@ -5001,7 +5082,12 @@ mod tests {
         // remove fora do range → erro
         assert!(apply_sig_op(&items, &json!({"op":"remove","index":9}), true).is_err());
         // add no call-site sem 'arg' → erro (inseguro)
-        assert!(apply_sig_op(&args, &json!({"op":"add","index":0,"param":"c: number"}), false).is_err());
+        assert!(apply_sig_op(
+            &args,
+            &json!({"op":"add","index":0,"param":"c: number"}),
+            false
+        )
+        .is_err());
     }
 
     // F5: rewrite_list_at reescreve a lista completa (decl e call-site) end-to-end.
@@ -5087,7 +5173,10 @@ mod tests {
             full.len()
         );
         // aponta para a tool que serve o manual completo (mesma fonte da verdade).
-        assert!(short.contains("instructions"), "excerto aponta para a tool `instructions`");
+        assert!(
+            short.contains("instructions"),
+            "excerto aponta para a tool `instructions`"
+        );
         // ambos carregam as regras de ouro (mesmo conteúdo, um é recorte do outro). Case-insensitive
         // porque o manual usa "WARMUP" em caixa alta ("GATE DE WARMUP").
         let (slow, flow) = (short.to_lowercase(), full.to_lowercase());
