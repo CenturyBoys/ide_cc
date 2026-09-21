@@ -11,6 +11,56 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// ---- LOG DE ERROS LOCAL (sem rede/telemetria) ---------------------------
+// Registra falhas de tool + panics num arquivo JSONL, para DESCOBRIR erros na máquina do usuário
+// sem depender de relatório manual. Path via CODE_INTEL_LOG (="off" desliga); default
+// ~/.cache/code-intel-mcp/errors.jsonl. Best-effort: nunca afeta a operação.
+fn log_file_path() -> Option<std::path::PathBuf> {
+    match std::env::var("CODE_INTEL_LOG") {
+        Ok(v) if v.eq_ignore_ascii_case("off") => None,
+        Ok(v) if !v.is_empty() => Some(std::path::PathBuf::from(v)),
+        _ => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            let base = std::env::var("XDG_CACHE_HOME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{home}/.cache"));
+            Some(
+                std::path::PathBuf::from(base)
+                    .join("code-intel-mcp")
+                    .join("errors.jsonl"),
+            )
+        }
+    }
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn log_event(kind: &str, tool: &str, args: &Value, msg: &str) {
+    let Some(path) = log_file_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let line = json!({
+        "ts": now_ms(), "kind": kind, "tool": tool,
+        "version": env!("CARGO_PKG_VERSION"), "msg": msg, "args": args,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
+    }
+}
+
 // Roteamento por LINGUAGEM × OPERAÇÃO:
 // - TypeScript: tsgo (nav/rename, rápido e correto) + vtsls (refactorings — tsgo não os tem).
 // - Python: basedpyright para tudo.
@@ -2034,6 +2084,7 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         "problems": problems,
         "report": report,
         "hint": hint,
+        "error_log": log_file_path().map(|p| p.to_string_lossy().into_owned()),
     }))
 }
 
@@ -2198,6 +2249,7 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
             json!({"content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}]})
         }
         Err(e) => {
+            log_event("tool_error", name, args, &e); // descobre erros de campo (log local)
             json!({"content":[{"type":"text","text": format!("ERRO: {e}")}], "isError": true})
         }
     }
@@ -2380,6 +2432,12 @@ fn forward_call(name: &str, args: &Value) -> Value {
 }
 
 fn main() {
+    // panics vão pro log local (além do stderr) — descobre crashes na máquina do usuário.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        log_event("panic", "-", &Value::Null, &msg);
+        eprintln!("code-intel-mcp panic: {msg}");
+    }));
     let argv: Vec<String> = std::env::args().collect();
     if argv.iter().any(|a| a == "--version" || a == "-V") {
         println!("code-intel-mcp {}", env!("CARGO_PKG_VERSION"));

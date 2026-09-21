@@ -188,6 +188,14 @@ The agent uses the semantic tools (the [`semantic-refactor`](.claude/skills/sema
 skill nudges it to prefer these over grep/sed). You decide **what**; the tool guarantees the
 mechanical precision.
 
+### Error log (field diagnostics)
+
+Every tool failure and panic is appended as JSON to a **local** log (no network/telemetry) — so
+problems on a user's machine are discoverable without a manual report. Default:
+`~/.cache/code-intel-mcp/errors.jsonl` (override with `CODE_INTEL_LOG=/path`, disable with
+`CODE_INTEL_LOG=off`). `doctor` reports the path in `error_log`. To diagnose, inspect the file (or
+ask the user to send it).
+
 ## Documentation
 
 - [`docs/LANGUAGE-SETUP.md`](docs/LANGUAGE-SETUP.md) — per-language requirements (⚠️ Python)
