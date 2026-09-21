@@ -14,7 +14,7 @@
   <a href="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml"><img src="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/CenturyBoys/ide_cc/releases"><img src="https://img.shields.io/github/v/release/CenturyBoys/ide_cc?sort=semver" alt="Release"></a>
   <img src="https://img.shields.io/badge/linguagens-5-blue" alt="5 linguagens">
-  <img src="https://img.shields.io/badge/ferramentas-10-blueviolet" alt="10 ferramentas">
+  <img src="https://img.shields.io/badge/ferramentas-23-blueviolet" alt="23 ferramentas">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT"></a>
 </p>
 
@@ -59,20 +59,41 @@ com garantia**. Detalhes: [`docs/AB-EXPERIMENT.md`](docs/AB-EXPERIMENT.md).
 - 🩺 **`doctor`** — verifica e **corrige** o setup por linguagem (ex.: cria o `pyrightconfig.json`
   do Python detectando `src/` e o `.venv`).
 
-## Ferramentas (10)
+## Ferramentas (23)
+
+**Navegação** — localizações retornam `path:linha:conteúdo` + ~2 linhas de contexto (menos re-leituras):
 
 | Tool | O que faz |
 |---|---|
 | `find_references` | todas as referências semânticas a um símbolo (com gate de warmup) |
-| `rename_symbol` | rename semântico com apply→verify (`net_delta` + `verify_build` opcional) |
-| `move_symbol` | move símbolo para novo arquivo, atualizando imports |
-| `extract_function` | extrai um trecho para uma nova função |
-| `document_symbols` | árvore de símbolos (classes → métodos) de um arquivo |
 | `find_symbol` | acha símbolo por `Classe/metodo`, com posição exata |
 | `workspace_symbols` | busca símbolo em todo o projeto |
+| `document_symbols` | árvore de símbolos (classes → métodos) de um arquivo |
 | `call_hierarchy` | quem chama este símbolo (incoming calls) |
+| `blast_radius` | superfície de risco de um símbolo (refs + callers, test vs produção) antes de editar |
+
+**Edição verificada** — `apply=false` é preview; edições passam por `net_delta` (+ `verify_build` opcional):
+
+| Tool | O que faz |
+|---|---|
+| `rename_symbol` | rename semântico com apply→verify (`net_delta` + `verify_build` opcional) |
+| `move_symbol` | move símbolo para novo arquivo, atualizando imports |
+| `move_file` | move um arquivo inteiro e conserta os importers; reverte se o build quebrar |
+| `extract_function` | extrai um trecho para uma nova função |
+| `change_signature` | add/remove/reordena um parâmetro na declaração + todos os call-sites |
+| `replace_symbol_body` · `insert_before_symbol` · `insert_after_symbol` | edita pelo **nome** do símbolo (sem coordenadas cruas) |
+| `organize_imports` | organiza imports (preserva side-effect + type-only usado) |
+| `quick_fix` | aplica UMA code-action de correção para o diagnóstico de uma linha |
+| `safe_delete` | deleta um símbolo só se não houver referência externa (senão recusa) |
+| `simulate_edit` · `preview_edit` · `safe_apply` | simula `net_delta` em memória / mostra diff+blast / aplica só se `net_delta ≤ 0` |
+
+**Build & meta:**
+
+| Tool | O que faz |
+|---|---|
 | `validate_build` | roda o build da linguagem e reporta erros (2ª camada de segurança) |
-| `doctor` | verifica/corrige o setup do projeto por linguagem |
+| `doctor` | verifica/corrige o setup por linguagem; sonda refs silenciosamente incompletas |
+| `instructions` | manual de uso completo e portátil (herdado por qualquer cliente MCP) |
 
 ## Linguagens (5)
 
