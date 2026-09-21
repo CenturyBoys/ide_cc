@@ -6,6 +6,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-21
+
 > Lote "Skills & Features" (2026-09-21) — a partir da pesquisa de 2 etapas (concorrentes + internet)
 > em `.aux-files/PLANO-SKILLS-FEATURES.md`. Superfície de tools: **10 → 23**. `cargo test`: 42 verde.
 
@@ -394,7 +396,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...v0.8.0
 [0.7.7]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...v0.7.5
