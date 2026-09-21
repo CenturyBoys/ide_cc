@@ -15,7 +15,7 @@
   <a href="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml"><img src="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/CenturyBoys/ide_cc/releases"><img src="https://img.shields.io/github/v/release/CenturyBoys/ide_cc?sort=semver" alt="Release"></a>
   <img src="https://img.shields.io/badge/languages-5-blue" alt="5 languages">
-  <img src="https://img.shields.io/badge/tools-10-blueviolet" alt="10 tools">
+  <img src="https://img.shields.io/badge/tools-23-blueviolet" alt="23 tools">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT"></a>
 </p>
 
@@ -91,20 +91,41 @@ safety on the edit**, not breadth of navigation.
 > If you want the widest language coverage, **Serena** and **agent-lsp** are excellent. If your
 > priority is that a refactor **never silently breaks the build**, that's what we optimize for.
 
-## Tools (10)
+## Tools (23)
+
+**Navigation** — locations return `path:line:content` + ~2 lines of context (fewer re-reads):
 
 | Tool | What it does |
 |---|---|
 | `find_references` | all semantic references to a symbol (with warmup gate) |
-| `rename_symbol` | semantic rename with apply→verify (`net_delta` + optional `verify_build`) |
-| `move_symbol` | moves a symbol to a new file, updating imports |
-| `extract_function` | extracts a snippet into a new function |
-| `document_symbols` | symbol tree (classes → methods) of a file |
 | `find_symbol` | finds a symbol by `Class/method`, with exact position |
 | `workspace_symbols` | searches for a symbol across the whole project |
+| `document_symbols` | symbol tree (classes → methods) of a file |
 | `call_hierarchy` | who calls this symbol (incoming calls) |
+| `blast_radius` | risk surface of a symbol (refs + callers, test vs prod) before editing |
+
+**Verified editing** — `apply=false` is preview; edits go through `net_delta` (+ optional `verify_build`):
+
+| Tool | What it does |
+|---|---|
+| `rename_symbol` | semantic rename with apply→verify (`net_delta` + optional `verify_build`) |
+| `move_symbol` | moves a symbol to a new file, updating imports |
+| `move_file` | moves a whole file and fixes importers; reverts if the build breaks |
+| `extract_function` | extracts a snippet into a new function |
+| `change_signature` | add/remove/reorder a parameter across the declaration + all call sites |
+| `replace_symbol_body` · `insert_before_symbol` · `insert_after_symbol` | edit by symbol **name** (no raw coordinates) |
+| `organize_imports` | organizes imports (keeps side-effect + used type-only) |
+| `quick_fix` | applies one quick-fix code action for a line's diagnostic |
+| `safe_delete` | deletes a symbol only if it has no external references (else refuses) |
+| `simulate_edit` · `preview_edit` · `safe_apply` | simulate `net_delta` in memory / show diff+blast / apply only if `net_delta ≤ 0` |
+
+**Build & meta:**
+
+| Tool | What it does |
+|---|---|
 | `validate_build` | runs the language build and reports errors (2nd safety layer) |
-| `doctor` | checks/fixes per-language project setup |
+| `doctor` | checks/fixes per-language project setup; probes for silently-incomplete refs |
+| `instructions` | full portable usage manual (inherited by any MCP client) |
 
 ## Languages (5)
 
