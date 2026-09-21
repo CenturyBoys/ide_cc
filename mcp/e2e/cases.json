@@ -1,5 +1,23 @@
 [
   {
+    "lang": "typescript",
+    "project": "fixtures/ts-monorepo",
+    "cases": [
+      {
+        "name": "MONOREPO: find_references cruza packages (alias @core)",
+        "tool": "find_references",
+        "args": {"file": "packages/core/src/index.ts", "symbol": "Thing"},
+        "assert": [{"path": "count", "op": ">=", "value": 3}, {"path": "stable", "op": "==", "value": true}]
+      },
+      {
+        "name": "MONOREPO: rename cruza packages com segurança (2 arquivos, net_delta 0)",
+        "tool": "rename_symbol",
+        "args": {"file": "packages/core/src/index.ts", "symbol": "Thing", "new_name": "Widget", "apply": false},
+        "assert": [{"path": "safe", "op": "==", "value": true}, {"path": "blast_radius.files", "op": ">=", "value": 2}]
+      }
+    ]
+  },
+  {
     "lang": "python",
     "project": "fixtures/python",
     "cases": [

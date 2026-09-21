@@ -6,6 +6,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **Cobertura e2e de MONOREPO** (`fixtures/ts-monorepo`, 2 packages + alias `@core`): valida que
+  `find_references` e `rename_symbol` **cruzam packages** com segurança (find_references acha o uso
+  cross-package; rename toca os 2 arquivos, `net_delta 0`, `safe`). Confirma — e guarda — o suporte a
+  monorepo (área com muitas issues nos concorrentes; a nossa funciona).
+
 ## [0.7.5] - 2026-09-20
 
 Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-ISSUE-SCAN.md`).
