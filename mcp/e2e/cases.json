@@ -46,16 +46,16 @@
         "assert": [{"path": "mode", "op": "==", "value": "noop"}]
       },
       {
-        "name": "ADVERSARIAL P11: extract_function em Python retorna erro explícito (não suportado)",
+        "name": "ADVERSARIAL P11: extract_function em Python retorna unsupported GRACIOSO (não raw-throw)",
         "tool": "extract_function",
         "args": {"file": "models.py", "start_line": 7, "end_line": 7, "apply": false},
-        "assert": [{"path": "__error__", "op": "present"}]
+        "assert": [{"path": "error", "op": "==", "value": "extract_unsupported"}]
       },
       {
-        "name": "ADVERSARIAL P11: move_symbol em Python retorna erro explícito (não suportado)",
+        "name": "ADVERSARIAL P11: move_symbol em Python retorna unsupported GRACIOSO (não raw-throw)",
         "tool": "move_symbol",
         "args": {"file": "models.py", "symbol": "ResponseCode", "apply": false},
-        "assert": [{"path": "__error__", "op": "present"}]
+        "assert": [{"path": "error", "op": "==", "value": "move_unsupported"}]
       },
       {
         "name": "ADVERSARIAL P10: workspace_symbols lang errada (sem fontes .ts) retorna rápido com aviso",

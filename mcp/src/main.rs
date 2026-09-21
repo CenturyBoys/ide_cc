@@ -87,6 +87,15 @@ fn is_conn_dead(e: &str) -> bool {
     e.contains("pipe") || e.contains("broken") || e.contains("os error 32")
 }
 
+// Converte um offset de BYTE numa linha para a coluna em UNIDADES UTF-16 (encoding default do LSP).
+// Sem isso, uma linha com unicode ANTES do símbolo (ex.: acento, emoji num comentário/string) faz a
+// coluna sair errada e o edit atingir a posição errada em silêncio (achado #1 da pesquisa competitiva).
+fn utf16_col(row: &str, byte_off: usize) -> u64 {
+    row.get(..byte_off)
+        .map(|s| s.encode_utf16().count() as u64)
+        .unwrap_or(byte_off as u64)
+}
+
 // Acha `symbol` como IDENTIFICADOR COMPLETO em `row` (word boundary): o char antes e depois não
 // pode ser [A-Za-z0-9_]. Sem isso, "Result" casaria DENTRO de "RefundResult" e o rename atingiria
 // o símbolo errado (Bug 2 do relatório). Retorna o byte-offset (= coluna p/ ASCII).
@@ -120,7 +129,7 @@ fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64),
         let idx = (l as usize).saturating_sub(1);
         if let Some(row) = lines.get(idx) {
             if let Some(c) = find_ident(row, symbol) {
-                return Ok((idx as u64, c as u64));
+                return Ok((idx as u64, utf16_col(row, c)));
             }
         }
         return Err(format!(
@@ -129,7 +138,7 @@ fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64),
     }
     for (i, row) in lines.iter().enumerate() {
         if let Some(c) = find_ident(row, symbol) {
-            return Ok((i as u64, c as u64));
+            return Ok((i as u64, utf16_col(row, c)));
         }
     }
     Err(format!("identificador '{symbol}' não achado em {abs_file}"))
@@ -142,8 +151,9 @@ fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64),
 fn scan_ident(lines: &[&str], symbol: &str, start: usize, max: usize) -> Option<(u64, u64)> {
     let end = (start + max).min(lines.len());
     for (off, row) in lines.get(start..end)?.iter().enumerate() {
-        if let Some(c) = row.find(symbol) {
-            return Some(((start + off) as u64, c as u64));
+        // find_ident (palavra inteira) + coluna UTF-16 — consistente com locate.
+        if let Some(c) = find_ident(row, symbol) {
+            return Some(((start + off) as u64, utf16_col(row, c)));
         }
     }
     None
@@ -2483,6 +2493,16 @@ mod tests {
         assert_eq!(kind_label(5, &lines, 1), "Class"); // class comum
         assert_eq!(kind_label(23, &lines, 2), "Struct"); // record struct já é kind Struct
         assert_eq!(kind_label(6, &lines, 1), "Method"); // não-Class inalterado
+    }
+
+    // Achado #1 da pesquisa: coluna LSP é UTF-16, não byte. Unicode antes do símbolo desloca.
+    #[test]
+    fn utf16_col_handles_unicode() {
+        let row = "café x"; // 'é' = 2 bytes / 1 unidade UTF-16
+        assert_eq!(utf16_col(row, row.find('x').unwrap()), 5);
+        let row2 = "🚀ab"; // 🚀 = 4 bytes / 2 unidades UTF-16
+        assert_eq!(utf16_col(row2, row2.find('a').unwrap()), 2);
+        assert_eq!(utf16_col("hello world", 6), 6); // ASCII: byte == utf16
     }
 
     // Bug 2 (relatório rename): locate deve casar IDENTIFICADOR COMPLETO, não substring —

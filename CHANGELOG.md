@@ -14,6 +14,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   concorrentes (serena, mcpls, agent-lsp…), com ranking de classes de problema que podemos ter.
 
 ### Fixed
+- **Coluna de posição usava offset de BYTE em vez de UTF-16** (achado #1 da pesquisa competitiva —
+  serena #2064, mcpls #290): `locate`/`scan_ident` mandavam índice de byte como `character` do LSP;
+  qualquer unicode antes do símbolo na linha (acento/emoji em comentário/string) deslocava a coluna
+  → edit na posição errada em silêncio. Agora converte para unidades UTF-16 (`utf16_col`). Coberto
+  por teste. `scan_ident` também passou a casar por identificador inteiro (não substring).
 - **P13 — `validate_build`/`verify_build` revertia rename SEGURO em Python** (issue #5): o parser lia
   o resumo do basedpyright `"0 errors, 0 warnings, 0 notes"` como erro (regressão do meu P9 — o
   filtro só excluía `"N Error(s)"` do dotnet). Agora `is_count_summary` ignora qualquer resumo de
