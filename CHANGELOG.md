@@ -6,6 +6,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-09-20
+
+### Added
+- **Log de erros local** (para descobrir erros na máquina do usuário sem relatório manual): toda
+  falha de tool (`isError`) e todo `panic` são registrados como JSONL (`ts, kind, tool, msg, args,
+  version`) — **sem rede/telemetria**. Path via `CODE_INTEL_LOG` (`=off` desliga); default
+  `~/.cache/code-intel-mcp/errors.jsonl`. O `doctor` reporta o caminho em `error_log`. Basta
+  inspecionar o arquivo (ou pedir ao usuário) para diagnosticar problemas de campo.
+
 ## [0.7.6] - 2026-09-20
 
 ### Added
@@ -312,7 +321,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...v0.7.4
