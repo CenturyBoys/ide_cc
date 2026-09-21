@@ -6,7 +6,27 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **`call_hierarchy` expõe call-sites** (P14, issue #5): além de `incoming_count`, agora traz
+  `call_site_count` e, por chamador, `call_sites` (cada chamada via `fromRanges`) — antes 4 chamadas
+  no mesmo `wrapper` viravam "1" e subcontavam o blast radius.
+- **`docs/COMPETITOR-ISSUE-SCAN.md`**: varredura das issues (abertas+fechadas) de bridges LSP↔MCP
+  concorrentes (serena, mcpls, agent-lsp…), com ranking de classes de problema que podemos ter.
+
 ### Fixed
+- **P13 — `validate_build`/`verify_build` revertia rename SEGURO em Python** (issue #5): o parser lia
+  o resumo do basedpyright `"0 errors, 0 warnings, 0 notes"` como erro (regressão do meu P9 — o
+  filtro só excluía `"N Error(s)"` do dotnet). Agora `is_count_summary` ignora qualquer resumo de
+  contagem `<n> error(s)`. Coberto por teste unit + e2e (build verde → `build_ok:true`).
+- **N1/N2 (Dart) — extract/move usavam o kind do TS e/ou faziam raw-throw** (issue #4): `refactor_edit`
+  pede o kind PAI (`refactor.extract`/`refactor.move`, hierarquia LSP) e, se o backend não oferece,
+  retorna `unsupported` GRACIOSO (não erro cru) — como a descrição promete. Casos e2e Dart.
+- **N3 — `workspace_symbols` não era project-scoped** (issue #4): resultados de `.pub-cache`/SDK/deps
+  (e substring) poluíam a busca. Agora filtra ao projeto por default (`project_only`, exclui
+  `.pub-cache`/`node_modules`/SDK/etc.); reporta `filtered_out`.
+- **Bug 3 — índice stale após revert externo (`git checkout`)** (relatório rename): find_references/
+  call_hierarchy/rename agora `resync_all_changed()` — re-sincronizam TODOS os arquivos abertos com
+  mtime mudado (não só o consultado), refletindo mudanças feitas fora da ferramenta.
 - **`rename`/`find_references`/`call_hierarchy` atingiam o símbolo ERRADO por match de substring**
   (Bug 2 do relatório rename, C#): `locate` usava `row.find(symbol)`, então `"Result"` casava DENTRO
   de `"RefundResult"` e a operação mirava o tipo em vez do parâmetro — com `safe:true` silencioso.

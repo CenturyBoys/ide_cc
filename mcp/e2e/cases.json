@@ -62,6 +62,12 @@
         "tool": "workspace_symbols",
         "args": {"query": "ResponseModel", "lang": "typescript"},
         "assert": [{"path": "count", "op": "==", "value": 0}, {"path": "warning", "op": "present"}]
+      },
+      {
+        "name": "ADVERSARIAL P13: validate_build num projeto Python LIMPO é build_ok:true (não lê '0 errors' como erro)",
+        "tool": "validate_build",
+        "args": {"lang": "python"},
+        "assert": [{"path": "build_ok", "op": "==", "value": true}]
       }
     ]
   },
@@ -123,6 +129,12 @@
         "tool": "find_references",
         "args": {"file": "substring.ts", "symbol": "Result", "line": 6},
         "assert": [{"path": "count", "op": ">", "value": 0}, {"path": "count", "op": "<", "value": 3}]
+      },
+      {
+        "name": "P14: call_hierarchy expõe call_site_count (2 sites do mesmo chamador, não 1)",
+        "tool": "call_hierarchy",
+        "args": {"file": "math.ts", "symbol": "addNumbers", "line": 2},
+        "assert": [{"path": "incoming_count", "op": "==", "value": 1}, {"path": "call_site_count", "op": ">=", "value": 2}]
       }
     ]
   },
@@ -172,6 +184,18 @@
         "tool": "doctor",
         "args": {"smoke": true},
         "assert": [{"path": "report.0.smoke.ok", "op": "==", "value": true}]
+      },
+      {
+        "name": "N1: extract_function em Dart retorna resultado estruturado (não raw-throw)",
+        "tool": "extract_function",
+        "args": {"file": "lib/flag.dart", "start_line": 22, "end_line": 23, "apply": false},
+        "assert": [{"path": "operation", "op": "==", "value": "extract_function"}]
+      },
+      {
+        "name": "N2: move_symbol em Dart retorna resultado estruturado (não raw-throw)",
+        "tool": "move_symbol",
+        "args": {"file": "lib/flag.dart", "symbol": "Flag", "line": 4, "apply": false},
+        "assert": [{"path": "operation", "op": "==", "value": "move_symbol"}]
       }
     ]
   },
