@@ -6,6 +6,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-20
+
 ### Added
 - **`call_hierarchy` expõe call-sites** (P14, issue #5): além de `incoming_count`, agora traz
   `call_site_count` e, por chamador, `call_sites` (cada chamada via `fromRanges`) — antes 4 chamadas
@@ -271,7 +273,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.0...v0.7.1
