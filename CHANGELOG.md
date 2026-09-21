@@ -6,6 +6,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-09-21
+
+### Fixed
+- **Docs**: READMEs de porta-de-entrada atualizados para o estado atual (defasagens que
+  sobreviveram à Fase 6). `README.md`/`README.pt-BR.md`: badge e seção de tools **10 → 23**
+  (com as 13 novas, agrupadas por categoria). `mcp/README.md`: título "sobre tsgo (POC Fase 1)"
+  → "operações semânticas verificadas (5 linguagens · 23 tools)"; remove limitações já superadas
+  ("só TypeScript / Fase 4" e "sem cache persistente" — o daemon cache da Fase 5 existe).
+
 ## [0.8.1] - 2026-09-21
 
 ### Changed
@@ -405,7 +414,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...v0.8.0
 [0.7.7]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.6...v0.7.7
