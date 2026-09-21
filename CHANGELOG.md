@@ -6,6 +6,79 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+> Lote "Skills & Features" (2026-09-21) — a partir da pesquisa de 2 etapas (concorrentes + internet)
+> em `.aux-files/PLANO-SKILLS-FEATURES.md`. Superfície de tools: **10 → 23**. `cargo test`: 42 verde.
+
+### Added
+- **Skill `diagnostics-fix-loop`**: loop de correção de nível-projeto (check → ler diagnostics
+  estruturados → corrigir → re-check até limpo), com papéis divididos — a tool garante o build da
+  edição (net_delta/validate_build), a skill cuida da suíte e de erros em outros arquivos. (S3)
+- **Skill `context-pack-by-symbol`**: estratégia de leitura por símbolo (document_symbols → ler só o
+  corpo do símbolo-alvo → expandir via find_references/call_hierarchy sob demanda) em vez de ler o
+  arquivo inteiro. (S4)
+- **`doctor`**: sonda de contagem de referências (avisa, sem bloquear, quando um símbolo
+  referenciável retorna 0-1 ref estável num projeto multi-arquivo) e detecção de config pyright
+  presente-porém-incompleta (sem `include`/`venv`/`venvPath`) — pega proativamente o bug silencioso
+  de refs incompletas (caso pachamama 5-vs-61). Avisos agregados no campo `warnings`. (I2)
+- **`organize_imports`**: organiza imports via source-action interna do LSP (vtsls no TS); preserva
+  import de side-effect e type-only usado (onde sed/grep erraria); net_delta + unsupported honesto. (F2)
+- **`safe_delete`**: deleta um símbolo só se não houver referência fora da própria definição
+  (find_references pós gate de warmup — índice frio ERRA, nunca falso "0 refs"); senão RECUSA
+  listando os locais (formato `path:linha:conteúdo`) e, quando seguro, apaga via verify_and_apply. (F3)
+- **`simulate_edit` / `preview_edit` / `safe_apply`** — produtização do net_delta: `simulate_edit`
+  roda net_delta em memória sobre uma edição proposta pelo agente SEM tocar o disco; `preview_edit`
+  mostra o WorkspaceEdit + diff unificado + blast (read-only); `safe_apply` aplica só se net_delta≤0.
+  Consolidam rename/extract/move/safe_delete/organize_imports + as 3 tools num **único núcleo** de
+  simulação+apply. (F1)
+- **`replace_symbol_body` / `insert_before_symbol` / `insert_after_symbol`**: editam pelo NOME/
+  name_path do símbolo (via documentSymbol + sym_full_range), sem coordenadas cruas; passam pelo
+  núcleo verify_and_apply (net_delta, preview default). (F4)
+- **`blast_radius`**: superfície de risco de um símbolo ANTES de editar — COMPOSTO sobre
+  find_references (warmup-gated) + call_hierarchy (sem nova chamada LSP); refs e chamadores
+  particionados test vs produção + arquivos afetados, no formato I1. Read-only; índice frio → ERRO. (F6)
+- **`quick_fix`** (dirigido): aplica UMA code-action `quickfix` para o diagnóstico de uma linha, via
+  o executor de code-action interno, sem expor `code_action` cru; passa pelo verify_and_apply; sem
+  correção casável → honesto. (F7)
+- **`change_signature`**: adiciona/remove/reordena um parâmetro e atualiza a declaração E todos os
+  call-sites juntos. Como nenhum language server oferece o refactor nativo nos backends roteados,
+  constrói o WorkspaceEdit à mão (descobre chamadores via call_hierarchy, com gate de warmup: índice
+  frio → ERRO, nunca callers faltando em silêncio) e confere net_delta + verify_build antes de
+  aplicar. Recusa em vez de aplicar edição parcial/perigosa. (F5)
+- **`move_file`**: move/renomeia um arquivo inteiro e conserta importers/re-exports/barrels. Usa
+  `workspace/willRenameFiles` onde o server implementa; em TS (vtsls) usa `getEditsForFileRename`.
+  apply=false=preview (não move); apply=true move e aplica fixups via net_delta, e com verify_build
+  REVERTE o move se o build quebrar (rede para o bug basedpyright #1888). Desambiguado de
+  `move_symbol`. (F8)
+- **`instructions`** (guidance portátil server-side, G1): campo `instructions` no `initialize`
+  (excerto curto) + tool `instructions` com o manual completo de uso — **fonte única da verdade** em
+  `mod guidance` (mcp/src/main.rs). Herdado por **qualquer cliente MCP** (Codex/Cursor/Cline/Zed),
+  não só o Claude Code. Concentra a orientação de utilização (roteamento grep-vs-semântico; confiar
+  no resultado do gate; preview/simulate antes de safe_apply; blast antes de editar amplo).
+- **`AGENTS.md`** na raiz: ponteiro fino para a tool `instructions` + snippet de config do Codex
+  (`[mcp_servers.code-intel]`).
+- Testes versionados: `mcp/test-output-contract.jsonl`, `test-doctor.jsonl`, `test-organize.jsonl`,
+  `test-safe-delete.jsonl`, `test-safe-delete-cold.jsonl`, `test-simulate.jsonl`,
+  `test-symbol-edit.jsonl`, `test-blast-radius.jsonl`, `test-quick-fix.jsonl`,
+  `test-change-signature.jsonl`, `test-change-signature-cold.jsonl`, `test-move-file.jsonl`,
+  `test-move-file-revert.jsonl`, `test-instructions.jsonl`.
+
+### Changed
+- **I1 (contrato de saída):** as tools de localização (`find_references`, `find_symbol`,
+  `workspace_symbols`, `document_symbols`, `call_hierarchy`) agora retornam `path:linha:content` +
+  ~2 linhas de contexto (helper compartilhado `format_location`, UTF-8-safe), com locais agrupados/
+  contados em vez do payload LSP cru — reduz re-leituras de arquivo (medido: 15,2 → 3,2/tarefa).
+  `find_references` mantém `references` (retrocompat) e adiciona `by_file`.
+- **Superfície do MCP: 10 → 23 tools.** Capabilities de `initialize` anunciam
+  `workspace.fileOperations.willRename/didRename` (para receber o WorkspaceEdit de conserto de
+  imports ao mover arquivo).
+- **`.claude/skills/semantic-refactor/SKILL.md` virou ponteiro fino** para as instruções do MCP
+  code-intel (tool `instructions`), sem duplicar as regras — a orientação (roteamento
+  grep-vs-semântico e varredura textual do nome antigo após rename, S1+S2) passou a viver no server
+  como fonte única da verdade, evitando drift (C11).
+- Núcleo `verify_and_apply` consolidado como caminho único de simulação+apply; helpers
+  `flatten_ranges`/`find_decl_range` extraídos (`safe_delete` passou a usá-los, sem mudança de
+  comportamento).
+
 ## [0.7.7] - 2026-09-20
 
 ### Added
