@@ -1,0 +1,9 @@
+# F8 move_file (TS/vtsls via getEditsForFileRename): move um arquivo inteiro + conserta importers.
+# id2: PREVIEW (apply ausente) → NÃO move; importers=["src/consumer.ts"], import_edits=1, net_delta 0, safe:true.
+# id3: APPLY → moved:true, o import de consumer.ts vira "./util/helper"; net_delta 0.
+# NB: rode UMA vez por estado de fixture (id3 move o arquivo). Para repetir, resete o fixture
+# (bash benchmarks/scripts/setup-fixtures.sh) ou volte src/util/helper.ts para src/helper.ts.
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"move_file","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/move-file-ts","source":"src/helper.ts","dest":"src/util/helper.ts"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"move_file","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/move-file-ts","source":"src/helper.ts","dest":"src/util/helper.ts","apply":true}}}

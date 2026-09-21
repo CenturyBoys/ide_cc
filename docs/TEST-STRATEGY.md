@@ -116,5 +116,11 @@ casos e2e — o não-suportado precisa de erro explícito. Vira também document
   validada pelos casos (não-suportado → erro explícito).
 - [x] **Correções** P8, P9, P10, P11, P12 + `validate_build` C# + `record`→`Record` (v0.7.2).
 
-Cobertura atual: **17 testes unitários + 28 casos e2e** (5 language servers reais no CI) + modo
-`--real`. Todo verde.
+Cobertura atual: **42 testes unitários + 22 suítes e2e (`mcp/test-*.jsonl`) + 28 casos e2e
+adversariais** (`mcp/e2e/cases.json`; 5 language servers reais no CI) + modo `--real`. Todo verde.
+
+> Atualização 2026-09-21 (Fase 6): +14 suítes e2e para as tools novas (output contract, doctor,
+> organize_imports, safe_delete[+cold], simulate/preview/safe_apply, edições por símbolo,
+> blast_radius, quick_fix, change_signature[+cold], move_file[+revert], instructions) e +25 testes
+> unitários. Verificação e2e completa nas **5 linguagens** (TS/Python/Rust/Dart/C#) — C# validado
+> localmente com `dotnet` SDK 10 + `csharp-ls` 0.28.

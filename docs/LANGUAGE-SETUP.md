@@ -51,6 +51,11 @@ venv = ".venv"               # para resolver imports do virtualenv
 - Precisa do **.NET SDK** instalado e de `DOTNET_ROOT` no ambiente do MCP; o projeto carrega via
   **MSBuild** (cold-start ~24 s). Não trunca (bloqueia até carregar). `net_delta` confiável
   (Roslyn analisa em memória).
+- **Instalar o language server:** `dotnet tool install --global csharp-ls` (fica em
+  `$DOTNET_ROOT/tools/csharp-ls`). No MCP: `DOTNET_ROOT=<sdk>` + `CSHARP_LS_BIN=<.../tools/csharp-ls>`
+  (e garanta que `$DOTNET_ROOT` e `$DOTNET_ROOT/tools` estão no `PATH`). O TFM do projeto deve bater
+  com o SDK (o fixture usa `net10.0`; ajuste `CS_TFM` se seu SDK for outro). Verificação e2e:
+  `mcp/test-csharp.jsonl` (503 refs stable no `cs-demo`).
 
 ---
 

@@ -1,0 +1,8 @@
+# F8 move_file REVERT-on-broken-build: rode com verify_build=true e um TS_CHECK_CMD que FALHA
+# (simula pyright #1888 quebrando o build). Espera: applied:false, moved:false, reverted:true, o
+# arquivo volta ao caminho original e o import é restaurado. Ex.:
+#   TS_CHECK_CMD='false' TSGO_BIN=... VTSLS_BIN=... ./target/release/code-intel-mcp < test-move-file-revert.jsonl
+# (resete o fixture antes: bash benchmarks/scripts/setup-fixtures.sh)
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"move_file","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/move-file-ts","source":"src/helper.ts","dest":"src/util/helper.ts","apply":true,"verify_build":true}}}

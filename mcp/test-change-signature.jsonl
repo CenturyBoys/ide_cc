@@ -1,0 +1,9 @@
+# F5 change_signature (hand-built, TS/vtsls): reescreve a declaração + TODOS os call-sites juntos.
+# id2: reorder [1,0] em preview → 3 edits (core.ts decl + a.ts + b.ts), net_delta 0, safe:true, strategy:hand_built.
+# id3: remove do 2º param (b) COM apply=true → o corpo ainda usa 'b' → net_delta>0, errors_introduced=["Cannot find name 'b'."], applied:false (RECUSADO, disco intacto). É o diferencial: constrói à mão mas confere semanticamente.
+# id4: add sem 'arg' → unsupported/unsafe_add (recusa em vez de gerar caller que não compila).
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"change_signature","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/change-sig-ts","file":"src/core.ts","symbol":"compute","spec":{"op":"reorder","order":[1,0]}}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"change_signature","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/change-sig-ts","file":"src/core.ts","symbol":"compute","spec":{"op":"remove","index":1},"apply":true}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"change_signature","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/change-sig-ts","file":"src/core.ts","symbol":"compute","spec":{"op":"add","index":2,"param":"c: number"}}}}
