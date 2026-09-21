@@ -120,6 +120,33 @@ fn find_ident(row: &str, symbol: &str) -> Option<usize> {
     None
 }
 
+// Junta project+file de forma SEGURA: normaliza componentes (resolve '..'/'.') e recusa paths que
+// ESCAPAM a raiz do projeto (gap #2 da pesquisa: traversal via '../', symlink, prefixo parcial).
+// Comparação por COMPONENTES (não string), então '/root2' não "começa com" '/root'.
+fn safe_abs(project: &str, file: &str) -> Result<String, String> {
+    use std::path::{Component, PathBuf};
+    let root = std::fs::canonicalize(project)
+        .unwrap_or_else(|_| PathBuf::from(project.trim_end_matches('/')));
+    let joined = root.join(file);
+    let mut norm = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            Component::ParentDir => {
+                norm.pop();
+            }
+            Component::CurDir => {}
+            c => norm.push(c.as_os_str()),
+        }
+    }
+    if !norm.starts_with(&root) {
+        return Err(format!(
+            "path '{file}' escapa a raiz do projeto ('{}') — recusado",
+            root.display()
+        ));
+    }
+    Ok(norm.to_string_lossy().into_owned())
+}
+
 // Localiza a posição (LSP 0-indexed) do símbolo no arquivo. `line` opcional é 1-indexed (humano).
 // Casa por IDENTIFICADOR COMPLETO (não substring) — ver find_ident.
 fn locate(abs_file: &str, symbol: &str, line: Option<u64>) -> Result<(u64, u64), String> {
@@ -972,7 +999,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
     let client = srv.client(project, nav_backend(file))?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     client.ensure_open(&abs)?;
     client.resync_all_changed(); // Bug 3: reflete mudanças externas (git checkout) nos OUTROS arquivos
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -1083,7 +1110,7 @@ fn tool_rename_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     }
 
     let client = srv.client(project, nav_backend(file))?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     client.ensure_open(&abs)?;
     client.resync_all_changed(); // Bug 3: freshness cross-file
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -1208,7 +1235,7 @@ fn tool_extract_function(srv: &Server, a: &Value) -> Result<Value, String> {
     let apply = a["apply"].as_bool().unwrap_or(false);
     let backend = refactor_backend(file); // vtsls tem os refactorings de TS
     let mut client = srv.client(project, backend)?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     client.ensure_open(&abs)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("ler {abs}: {e}"))?;
     let lines: Vec<&str> = text.split('\n').collect();
@@ -1267,7 +1294,7 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let apply = a["apply"].as_bool().unwrap_or(false);
     let backend = refactor_backend(file);
     let mut client = srv.client(project, backend)?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     client.ensure_open(&abs)?;
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let range = json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c}});
@@ -1325,7 +1352,7 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
     let client = srv.client(project, nav_backend(file))?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
@@ -1349,7 +1376,7 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
         .as_str()
         .ok_or("faltou 'name_path' (ex.: 'Widget' ou 'Widget/render')")?;
     let client = srv.client(project, nav_backend(file))?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
@@ -1464,9 +1491,11 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
         "/usr/lib/",
         "/usr/share/",
     ];
+    let root_prefix = format!("{}/", root.trim_end_matches('/'));
     let in_scope = |uri: &str| -> bool {
         let p = uri_to_path(uri);
-        if project_only && !p.starts_with(&root) {
+        // boundary-aware: '/root2' NÃO conta como dentro de '/root' (gap #2).
+        if project_only && p != root && !p.starts_with(&root_prefix) {
             return false;
         }
         !dep_markers.iter().any(|m| p.contains(m))
@@ -1513,7 +1542,7 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
     let line = a["line"].as_u64();
     let client = srv.client(project, nav_backend(file))?;
-    let abs = format!("{}/{}", project.trim_end_matches('/'), file);
+    let abs = safe_abs(project, file)?;
     client.ensure_open(&abs)?;
     client.resync_all_changed(); // Bug 3: freshness cross-file
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
@@ -2493,6 +2522,23 @@ mod tests {
         assert_eq!(kind_label(5, &lines, 1), "Class"); // class comum
         assert_eq!(kind_label(23, &lines, 2), "Struct"); // record struct já é kind Struct
         assert_eq!(kind_label(6, &lines, 1), "Method"); // não-Class inalterado
+    }
+
+    // Gap #2 da pesquisa: URI percent-encode (espaço/acento) com roundtrip, e safe_abs contra traversal.
+    #[test]
+    fn uri_roundtrip_percent() {
+        let p = "/home/u/my project/café.rs";
+        let uri = path_to_uri(p);
+        assert!(uri.contains("my%20project"));
+        assert_eq!(uri_to_path(&uri), p);
+    }
+
+    #[test]
+    fn safe_abs_rejects_traversal() {
+        assert!(safe_abs("/tmp", "../etc/passwd").is_err());
+        assert!(safe_abs("/tmp", "a/../../etc").is_err());
+        assert!(safe_abs("/tmp", "sub/ok.txt").is_ok());
+        assert!(safe_abs("/tmp", "sub/../ok.txt").is_ok());
     }
 
     // Achado #1 da pesquisa: coluna LSP é UTF-16, não byte. Unicode antes do símbolo desloca.

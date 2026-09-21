@@ -30,6 +30,9 @@ fn write_frame(w: &mut ChildStdin, v: &Value) -> std::io::Result<()> {
     w.flush()
 }
 
+// Gap #5 da pesquisa (mcpls #457): Content-Length ilimitado → alocação/OOM. Cap defensivo.
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
     let mut len = 0usize;
     loop {
@@ -45,9 +48,20 @@ fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
             len = v.trim().parse().ok()?;
         }
     }
+    if len > MAX_FRAME_BYTES {
+        return None; // frame absurdo — aborta em vez de alocar
+    }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).ok()?;
     serde_json::from_slice(&buf).ok()
+}
+
+// ContentModified (-32801) e variantes textuais — erro transiente durante indexação.
+fn is_content_modified(e: &str) -> bool {
+    e.contains("-32801") || {
+        let l = e.to_lowercase();
+        l.contains("content modified") || l.contains("contentmodified")
+    }
 }
 
 impl LspClient {
@@ -169,7 +183,23 @@ impl LspClient {
         self.supports_pull.load(Ordering::SeqCst)
     }
 
+    // Gap #3 da pesquisa: ContentModified (-32801) é transiente — o server (rust-analyzer, etc.)
+    // rejeita porque o documento mudou durante o processamento (indexação). Retenta em vez de
+    // propagar erro duro.
     pub fn request(&self, method: &str, params: Value, timeout_ms: u64) -> Result<Value, String> {
+        let mut attempt = 0;
+        loop {
+            match self.request_once(method, params.clone(), timeout_ms) {
+                Err(e) if is_content_modified(&e) && attempt < 8 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn request_once(&self, method: &str, params: Value, timeout_ms: u64) -> Result<Value, String> {
         let id = self.id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -358,11 +388,75 @@ pub fn lang_id(abs_file: &str) -> &'static str {
     }
 }
 
+// Percent-encode um path para URI (mantém '/'; encoda espaço, #, %, acentos, etc.). Gap #2 da
+// pesquisa (mcpls #411): sem isso, paths com espaço/acento/# divergem do que o server produz.
+fn percent_encode_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    for b in p.bytes() {
+        let keep = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/');
+        if keep {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{b:02X}"));
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub fn path_to_uri(p: &str) -> String {
-    // suficiente para caminhos absolutos Unix nesta POC
-    format!("file://{}", p)
+    format!("file://{}", percent_encode_path(p))
 }
 
 pub fn uri_to_path(uri: &str) -> String {
-    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+    let raw = uri.strip_prefix("file://").unwrap_or(uri);
+    percent_decode(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_encode_decode_roundtrip() {
+        let p = "/home/u/my project/café#1.rs";
+        let enc = percent_encode_path(p);
+        assert!(enc.contains("my%20project"));
+        assert!(enc.contains("%23")); // '#'
+        assert!(enc.contains('/')); // separadores preservados
+        assert_eq!(percent_decode(&enc), p);
+    }
+
+    #[test]
+    fn content_modified_detection() {
+        assert!(is_content_modified("LSP error em x: {\"code\":-32801}"));
+        assert!(is_content_modified("content modified"));
+        assert!(!is_content_modified("timeout (10000ms) em x"));
+    }
+
+    #[test]
+    fn read_frame_caps_absurd_length() {
+        // Content-Length gigante -> None (não aloca)
+        let huge = format!("Content-Length: {}\r\n\r\n", usize::MAX);
+        let mut r = std::io::BufReader::new(huge.as_bytes());
+        assert!(read_frame(&mut r).is_none());
+    }
 }
