@@ -23,19 +23,19 @@ As edit-tools têm `apply=false` por default (uma chamada já é preview).
 
 ## Config do Codex (`~/.codex/config.toml`)
 
+Aponte para o **launcher portátil** (`scripts/code-intel-mcp.sh`): ele se auto-localiza e resolve os
+language servers sozinho (tsgo/vtsls/basedpyright no `node_modules` do repo; dart/rust-analyzer/
+csharp-ls no PATH; `DOTNET_ROOT` em `~/.dotnet`). Só o caminho do seu clone é específico da máquina:
+
 ```toml
 [mcp_servers.code-intel]
-command = "/home/ximit/Projects/ide_cc/mcp/target/release/code-intel-mcp"
-
-[mcp_servers.code-intel.env]
-TSGO_BIN = "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/tsgo"
-VTSLS_BIN = "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/vtsls"
-BASEDPYRIGHT_BIN = "/home/ximit/Projects/ide_cc/benchmarks/harness/node_modules/.bin/basedpyright-langserver"
-DART_BIN = "dart"
-RUST_ANALYZER_BIN = "rust-analyzer"
-CSHARP_LS_BIN = "csharp-ls"
+command = "/caminho/do/seu/clone/ide_cc/scripts/code-intel-mcp.sh"
 ```
 
-> Paths absolutos são específicos desta máquina — ajuste ao seu checkout. Depois de plugar, rode a
-> tool `doctor` (valida language server + config de workspace por linguagem) e a tool `instructions`
-> para o manual completo. Ligue `CODE_INTEL_DAEMON=1` para cache de LSP entre sessões.
+> Antes: `cargo build --release --manifest-path mcp/Cargo.toml`. Sobrescreva qualquer bin exportando
+> a env correspondente (`TSGO_BIN`, `DART_BIN`, …) em `[mcp_servers.code-intel.env]`. Depois de
+> plugar, rode a tool `doctor` (valida language server + config por linguagem) e a tool `instructions`
+> (manual completo). Ligue `CODE_INTEL_DAEMON=1` para cache de LSP entre sessões.
+
+No **Claude Code** nada de path por máquina: o `.mcp.json` do repo já usa
+`${CLAUDE_PROJECT_DIR:-.}/scripts/code-intel-mcp.sh`.

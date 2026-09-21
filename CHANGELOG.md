@@ -6,6 +6,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Changed
+- **`.mcp.json` portátil** (sem caminho por máquina): passa a apontar para o launcher
+  `scripts/code-intel-mcp.sh` via `${CLAUDE_PROJECT_DIR:-.}/scripts/code-intel-mcp.sh`. O launcher
+  se auto-localiza e resolve os language servers (tsgo/vtsls/basedpyright no `node_modules` do repo;
+  dart/rust-analyzer/csharp-ls no PATH; `DOTNET_ROOT` em `~/.dotnet`), respeitando overrides por env.
+  Snippet do Codex (AGENTS.md) e README atualizados para o mesmo launcher.
+
 ## [0.8.0] - 2026-09-21
 
 > Lote "Skills & Features" (2026-09-21) — a partir da pesquisa de 2 etapas (concorrentes + internet)
