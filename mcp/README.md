@@ -1,8 +1,10 @@
-# code-intel-mcp — camada MCP fina e rápida sobre tsgo (POC Fase 1)
+# code-intel-mcp — camada MCP de operações semânticas verificadas (5 linguagens · 23 tools)
 
-Servidor MCP em Rust que dá ao Claude Code operações semânticas **rápidas e seguras** sobre
-TypeScript, usando o **tsgo** (`@typescript/native-preview`) como backend — o server que a
-Fase 0 elegeu por ser o único rápido **e** correto (ver [`../benchmarks/results/RESULTS.md`](../benchmarks/results/RESULTS.md)).
+Servidor MCP em Rust que dá ao Claude Code (e a qualquer cliente MCP: Codex, Cursor, Cline, Zed)
+operações semânticas **rápidas e seguras** em **TypeScript, Python, Dart, Rust e C#**, roteando cada
+operação para o melhor language server por linguagem (**tsgo**/**vtsls**, **basedpyright**,
+**dart**, **rust-analyzer**, **csharp-ls**). A escolha do tsgo para TS veio da Fase 0 por ser o único
+rápido **e** correto (ver [`../benchmarks/results/RESULTS.md`](../benchmarks/results/RESULTS.md)).
 
 ## Os dois diferenciais
 
@@ -238,8 +240,7 @@ Rode o daemon manualmente com `code-intel-mcp --daemon` (ou deixe o MCP subir so
 - `extract_function` usa o nome default do tsserver (`newFunction`); falta parametrizar o nome.
 - `documentSymbol` do tsgo vem "achatado" (sem aninhar métodos sob a classe); a resolução
   compensa por sufixo/último-segmento, mas name_paths hierárquicos são aproximados.
-- Só TypeScript (tsgo/vtsls). Adapters para Python/Dart/Rust/C# são a Fase 4 (o roteamento por
-  backend e o diagnostics híbrido já foram desenhados pensando nisso).
-- Sem métricas de memória nem cache persistente entre execuções do servidor.
+- Cobertura RAM residente por language server ainda não medida sistematicamente (rust-analyzer/
+  Roslyn são pesados; ver notas em `docs/LANGUAGE-SETUP.md`).
 - Edições com `apply=true` não fazem backup em disco antes de escrever (a segurança vem do
   `net_delta`, não de snapshot/rollback de arquivos) — adicionar snapshot p/ produção.
