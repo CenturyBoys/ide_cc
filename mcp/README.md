@@ -34,9 +34,24 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
 | `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
 | `validate_build` | build da linguagem | `cargo check`/`dart analyze`/`dotnet build`… | roda o build NO DISCO e reporta erros (2ª camada de segurança) |
-| `doctor` | — | checagem de setup | verifica LSP disponível + config de workspace por linguagem; `fix=true` corrige (ex.: cria `pyrightconfig.json`) |
+| `doctor` | — | checagem de setup | verifica LSP disponível + config de workspace por linguagem; `fix=true` corrige (ex.: cria `pyrightconfig.json`); sonda contagem de refs e config incompleta (avisos no campo `warnings`) |
+| `organize_imports` | **vtsls**/backend | `source.organizeImports` | organiza imports (preserva side-effect + type-only usado) + apply→verify |
+| `safe_delete` | nav backend | `references` + delete | deleta símbolo **só se 0 refs externas**; senão recusa listando os locais; cold → `index_not_ready` (nunca falso "0 refs") |
+| `simulate_edit` · `preview_edit` · `safe_apply` | — (núcleo) | `net_delta` em memória | simula / mostra (diff+blast) / aplica uma edição proposta pelo agente — `safe_apply` só aplica se `net_delta≤0` |
+| `replace_symbol_body` · `insert_before_symbol` · `insert_after_symbol` | nav backend | `documentSymbol` + edit | edita por **nome** do símbolo (sem coordenadas cruas) + apply→verify |
+| `blast_radius` | composto | `references` + `call_hierarchy` | superfície de risco (refs + callers, particionado test vs produção) **antes** de editar; read-only |
+| `quick_fix` | code-action | `quickfix` | aplica UMA correção de diagnóstico de uma linha (executor interno, sem `code_action` cru) + apply→verify |
+| `change_signature` | hand-built / nativo | `call_hierarchy` + edit | add/remove/reordena parâmetro na declaração **e** em todos os call-sites; recusa em vez de aplicar edição parcial/perigosa |
+| `move_file` | `willRenameFiles`/tsserver | fileRename edits | move arquivo inteiro + conserta importers/re-exports; **reverte se o build quebrar** (rede anti basedpyright #1888); desambiguado de `move_symbol` |
+| `instructions` | — | guidance server-side | manual de uso (roteamento grep-vs-semântico, preview→apply, blast antes de editar) — **fonte única** herdada por QUALQUER cliente MCP (Codex/Cursor/Cline/Zed), também no campo `instructions` do `initialize` |
 
-Além disso, `rename`/`extract`/`move` aceitam `verify_build: true` (com `apply=true`): após
+As tools de **localização** (`find_references`, `find_symbol`, `workspace_symbols`,
+`document_symbols`, `call_hierarchy`) retornam `path:linha:content` + ~2 linhas de contexto (helper
+`format_location`, UTF-8-safe) e locais agrupados/contados — em vez do payload LSP cru — reduzindo
+re-leituras de arquivo pelo agente (I1).
+
+Além disso, `rename`/`extract`/`move`/`safe_delete`/`organize_imports`/`change_signature`/`move_file`
+aceitam `verify_build: true` (com `apply=true`): após
 escrever no disco, rodam o build da linguagem e **revertem se falhar** — fecha o buraco do
 `net_delta` em memória (ex.: erros que só o `cargo check` do Rust vê).
 
@@ -180,7 +195,8 @@ Claude Code ──MCP(stdio, JSON/linha)──> code-intel-mcp (Rust)
 - `src/lsp.rs` — cliente LSP: processo persistente, thread leitora dedicada roteando por id,
   responde requests server-initiated (senão o workspace não carrega), requests síncronos,
   `did_change` (full sync, para simular em memória) e `pull_diagnostics`.
-- `src/main.rs` — servidor MCP + gate de warmup + apply→verify + 6 tools.
+- `src/main.rs` — servidor MCP + gate de warmup + apply→verify + **23 tools** + `mod guidance`
+  (manual de uso, fonte única do campo `instructions` e da tool `instructions`).
 
 O `net_delta` usa **pull diagnostics** (não push): como o tsgo é pull-based e o server processa
 mensagens em ordem, um `textDocument/diagnostic` após o `didChange` reflete deterministicamente
