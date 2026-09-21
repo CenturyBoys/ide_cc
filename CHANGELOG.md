@@ -6,6 +6,28 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-09-20
+
+Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-ISSUE-SCAN.md`).
+
+### Fixed
+- **Gap #2 — URIs sem percent-encode + containment frágil**: `path_to_uri`/`uri_to_path` agora
+  fazem percent-encode/decode (paths com espaço/acento/`#`/`%` — mcpls #411); `workspace_symbols`
+  usa containment **por boundary** (`/root2` não conta como dentro de `/root`).
+- **Gap #3 — `ContentModified` (-32801) sem retry**: `request()` reintenta o erro transiente que o
+  rust-analyzer (e outros) devolvem durante a indexação, em vez de propagar erro duro (serena #1724).
+
+### Security
+- **Gap #2 — path traversal**: `safe_abs` normaliza `..`/`.` e **recusa** paths que escapam a raiz
+  do projeto (ex.: `file="../../etc/passwd"`), por comparação de componentes.
+- **Gap #5 — frame LSP ilimitado**: `read_frame` limita `Content-Length` a 64 MiB (evita
+  alocação/OOM com header malicioso — mcpls #457).
+
+### Notes
+- **Gap #4 — rename com corrupção sintaticamente VÁLIDA**: fica como limitação conhecida — o
+  `net_delta`+`verify_build` garante "não quebra o build", não "faz o que você quis dizer"; detectar
+  edição válida-mas-errada exige entender a intenção. Documentado.
+
 ## [0.7.4] - 2026-09-20
 
 ### Added
@@ -273,7 +295,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.1...v0.7.2
