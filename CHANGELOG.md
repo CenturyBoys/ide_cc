@@ -29,6 +29,16 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
     `mcp/e2e/fixtures/dart/lib/ext.dart`.
 
 ### Added
+- **Gaps enumeráveis / verificação (issue #14):** `find_references` e `blast_radius` passam a devolver
+  um campo `verification` `{grep, rationale, possibly_incomplete}` — o `grep` EXATO para o agente
+  cross-checar o `count` semântico e enumerar o que o LSP possa ter deixado de fora (operacionaliza a
+  honestidade). `possibly_incomplete` é conservador (liga no índice frio/`stable:false`); o sinal
+  forte de incompletude silenciosa (ex.: Python openFilesOnly) continua sendo o cross-check
+  grep + `doctor`, apontado no `rationale`.
+- **`operation_summary` (issue #15):** toda edit-tool (rename/extract/move/change_signature/
+  safe_delete/…) devolve um rótulo legível da operação ("rename: N edição(ões) em M arquivo(s),
+  net_delta Z — preview/APLICADO"), derivado do nome da op + `blast_radius`/`creates`/`net_delta`.
+  Injetado num ponto único (`call_tool`). AST-diff refactoring-aware completo fica como follow-up.
 - **`repo_map` (issue #12):** nova tool — mapa SIMBÓLICO rankeado do repositório sob orçamento de
   tokens, via o grafo do language server (`document_symbols`), **sem embeddings**. Lista os símbolos
   mais importantes (classes/funções/tipos) com assinatura, rankeados por heurística (kind +

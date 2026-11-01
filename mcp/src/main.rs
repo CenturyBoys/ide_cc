@@ -1771,6 +1771,63 @@ fn tool_safe_apply(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
+// #14 (issue #14): "gaps enumeráveis" — toda contagem semântica (find_references/blast_radius) vem
+// com o grep EXATO p/ o agente CROSS-CHECAR e enumerar o que o LSP possa ter deixado de fora
+// (operacionaliza a honestidade: "não confie cego; aqui está como verificar o que faltou").
+fn verification_hint(project: &str, symbol: &str, stable: bool) -> Value {
+    let base = base_name(symbol.rsplit('/').next().unwrap_or(symbol));
+    json!({
+        "grep": format!("grep -rnw '{base}' {project}"),
+        "rationale": "`count` é SEMÂNTICO (só usos reais; exclui a definição, strings, comentários e homônimos). Compare com o grep: se o grep for MUITO maior E `doctor` acusar ambiente degradado (venv/tsconfig/deps faltando), o resultado pode estar INCOMPLETO em silêncio — rode `doctor`.",
+        "possibly_incomplete": !stable
+    })
+}
+
+// #15 (issue #15): rótulo semântico LEVE de uma edição, derivado do NOME da operação + o
+// blast_radius/creates/net_delta que o verify_and_apply já computou. None quando `v` não é um
+// resultado de edição (sem blast_radius/net_delta) — injetado uma vez em call_tool.
+fn operation_summary(tool: &str, v: &Value) -> Option<String> {
+    let br = v.get("blast_radius");
+    if br.is_none() && v.get("net_delta").is_none() {
+        return None;
+    }
+    let verb = match tool {
+        "rename_symbol" => "rename",
+        "extract_function" => "extract function",
+        "move_symbol" => "move symbol",
+        "move_file" => "move file",
+        "change_signature" => "change signature",
+        "safe_delete" => "safe delete",
+        "organize_imports" => "organize imports",
+        "quick_fix" => "quick fix",
+        "replace_symbol_body" => "replace body",
+        "insert_before_symbol" => "insert before",
+        "insert_after_symbol" => "insert after",
+        "safe_apply" | "preview_edit" | "simulate_edit" => "edit",
+        _ => return None,
+    };
+    let files = br.and_then(|b| b["files"].as_u64()).unwrap_or(0);
+    let edits = br.and_then(|b| b["edits"].as_u64()).unwrap_or(0);
+    let creates = v
+        .get("creates")
+        .and_then(|c| c.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mut s = format!("{verb}: {edits} edição(ões) em {files} arquivo(s)");
+    if creates > 0 {
+        s.push_str(&format!(", cria {creates} arquivo(s)"));
+    }
+    if let Some(d) = v.get("net_delta").and_then(|n| n.as_i64()) {
+        s.push_str(&format!(", net_delta {d}"));
+    }
+    s.push_str(if v.get("applied").and_then(|x| x.as_bool()).unwrap_or(false) {
+        " — APLICADO"
+    } else {
+        " — preview (não aplicado)"
+    });
+    Some(s)
+}
+
 fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"]
         .as_str()
@@ -1810,6 +1867,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
             "warmup_ms": warmup_ms,
             "polls": polls,
             "by_file": by_file,
+            "verification": verification_hint(project, symbol, stable),
         }));
     }
     // I1: cada referência vira `path:line:content` + ~2 linhas de contexto (via helper compartilhado),
@@ -1846,6 +1904,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
         "polls": polls,
         "references": locs,
         "by_file": grouped,
+        "verification": verification_hint(project, symbol, stable),
     }))
 }
 
@@ -2660,6 +2719,7 @@ fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
         "affected_files": export_files.into_iter().collect::<Vec<_>>(),
         "references": {"non_test": refs_prod, "test": refs_test},
         "callers": {"non_test": callers_prod, "test": callers_test},
+        "verification": verification_hint(project, symbol, stable),
         "note": "read-only: composto sobre find_references (warmup-gated) + call_hierarchy. Use antes de editar para ver a superfície de risco.",
     }))
 }
@@ -5010,7 +5070,13 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
     match res {
-        Ok(v) => {
+        Ok(mut v) => {
+            // #15: rótulo semântico leve da edição (edit-tools) a partir do nome da op + blast_radius.
+            if let Some(sum) = operation_summary(name, &v) {
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("operation_summary".into(), json!(sum));
+                }
+            }
             // MCP 2025-11-25: devolvemos o JSON também em `structuredContent` (consumo determinístico
             // por agents) mantendo a MESMA carga serializada em TextContent (backwards-compat com
             // clientes que só leem `content[].text`). Issue #10.
