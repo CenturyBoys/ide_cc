@@ -1,4 +1,4 @@
-# code-intel-mcp — camada MCP de operações semânticas verificadas (5 linguagens · 23 tools)
+# code-intel-mcp — camada MCP de operações semânticas verificadas (5 linguagens · 25 tools)
 
 Servidor MCP em Rust que dá ao Claude Code (e a qualquer cliente MCP: Codex, Cursor, Cline, Zed)
 operações semânticas **rápidas e seguras** em **TypeScript, Python, Dart, Rust e C#**, roteando cada
@@ -200,7 +200,7 @@ Claude Code ──MCP(stdio, JSON/linha)──> code-intel-mcp (Rust)
 - `src/lsp.rs` — cliente LSP: processo persistente, thread leitora dedicada roteando por id,
   responde requests server-initiated (senão o workspace não carrega), requests síncronos,
   `did_change` (full sync, para simular em memória) e `pull_diagnostics`.
-- `src/main.rs` — servidor MCP + gate de warmup + apply→verify + **23 tools** + `mod guidance`
+- `src/main.rs` — servidor MCP + gate de warmup + apply→verify + **25 tools** + `mod guidance`
   (manual de uso, fonte única do campo `instructions` e da tool `instructions`).
 
 O `net_delta` usa **pull diagnostics** (não push): como o tsgo é pull-based e o server processa

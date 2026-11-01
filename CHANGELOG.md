@@ -29,6 +29,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
     `mcp/e2e/fixtures/dart/lib/ext.dart`.
 
 ### Added
+- **`repo_map` (issue #12):** nova tool — mapa SIMBÓLICO rankeado do repositório sob orçamento de
+  tokens, via o grafo do language server (`document_symbols`), **sem embeddings**. Lista os símbolos
+  mais importantes (classes/funções/tipos) com assinatura, rankeados por heurística (kind +
+  export/public + boost de `focus`), varrendo até 40 arquivos (prioriza `src/lib`). Orienta o agente
+  rápido (time-to-correct-change). *PageRank completo sobre o grafo de refs fica como follow-up.*
+- **`symbol_bundle(name, max_tokens)` (issue #13):** nova tool — contexto por SÍMBOLO sob orçamento:
+  assinatura + (opcional) corpo + callers (`incomingCalls`) + callees (`outgoingCalls`), cortado ao
+  orçamento. Produtiza a skill `context-pack-by-symbol` como tool. Superfície de tools **23 → 25**.
 - **MCP `structuredContent` + tool annotations (issue #10):** toda tool devolve o JSON também no
   campo `structuredContent` (spec MCP 2025-11-25) — consumo determinístico por agents autônomos —
   mantendo a MESMA carga em `content[].text` (backwards-compat). Tools de leitura

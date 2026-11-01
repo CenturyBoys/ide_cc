@@ -20,6 +20,24 @@
         "tool": "doctor",
         "args": {},
         "assert": [{"path": "report.0.workspace_config.ok", "op": "==", "value": true}, {"path": "report.0.env_resolution.ok", "op": "==", "value": true}]
+      },
+      {
+        "name": "#12 repo_map: mapa simbólico rankeado (cruza packages), sob orçamento",
+        "tool": "repo_map",
+        "args": {"max_tokens": 2000},
+        "assert": [{"path": "symbols", "op": "nonempty"}, {"path": "files_scanned", "op": ">=", "value": 2}, {"path": "symbols.0.signature", "op": "present"}]
+      },
+      {
+        "name": "#13 symbol_bundle: Thing traz assinatura + callers cross-package (run)",
+        "tool": "symbol_bundle",
+        "args": {"file": "packages/core/src/index.ts", "symbol": "Thing", "include_source": true},
+        "assert": [{"path": "signature", "op": "present"}, {"path": "callers", "op": "nonempty"}, {"path": "body", "op": "present"}]
+      },
+      {
+        "name": "#13 symbol_bundle: run expõe callees (outgoing calls)",
+        "tool": "symbol_bundle",
+        "args": {"file": "packages/app/src/main.ts", "symbol": "run"},
+        "assert": [{"path": "callees", "op": "nonempty"}]
       }
     ]
   },

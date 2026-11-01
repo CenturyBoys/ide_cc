@@ -3702,6 +3702,216 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
               "call_site_count": call_site_total, "incoming": callers}))
 }
 
+// ---- #12/#13: contexto por símbolo (symbol_bundle) e mapa simbólico do repo (repo_map) ----------
+// Estimativa barata de tokens (~4 chars/token) para o corte por orçamento. Não é tokenizer real —
+// é um teto conservador suficiente para manter o contexto enxuto.
+fn approx_tokens(s: &str) -> usize {
+    s.chars().count() / 4 + 1
+}
+
+// #13 — symbol_bundle: pacote auto-contido de UM símbolo sob orçamento de tokens: assinatura +
+// (opcional) corpo + callers + callees. Produtiza a skill context-pack-by-symbol como tool.
+fn tool_symbol_bundle(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file' (p/ localizar o símbolo)")?;
+    let name_path = a["symbol"]
+        .as_str()
+        .or_else(|| a["name"].as_str())
+        .ok_or("faltou 'symbol' (nome ou name_path)")?;
+    let line = a["line"].as_u64();
+    let max_tokens = a["max_tokens"].as_u64().unwrap_or(4000) as usize;
+    let include_source = a["include_source"].as_bool().unwrap_or(false);
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    let (l, c) = resolve_pos(&client, &abs, name_path, line)?;
+    let range = find_decl_range(&client, &abs, name_path, l)?;
+    let txt = std::fs::read_to_string(&abs).unwrap_or_default();
+    let lines: Vec<&str> = txt.split('\n').collect();
+    let (sl, _) = range.0;
+    let (el, _) = range.1;
+    let signature = lines
+        .get(sl as usize)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let body_full = {
+        let end = (el as usize).min(lines.len().saturating_sub(1));
+        lines
+            .get(sl as usize..=end)
+            .map(|s| s.join("\n"))
+            .unwrap_or_default()
+    };
+    // call hierarchy: callers (incoming) + callees (outgoing)
+    let uri = path_to_uri(&abs);
+    let prep = client.request(
+        "textDocument/prepareCallHierarchy",
+        json!({"textDocument":{"uri":uri},"position":{"line":l,"character":c}}),
+        10_000,
+    )?;
+    let root = client.root().to_string();
+    let item = prep.as_array().and_then(|a| a.first()).cloned();
+    let (mut callers, mut callees): (Vec<Value>, Vec<Value>) = (vec![], vec![]);
+    if let Some(item) = item {
+        let map_calls = |arr: Value, key: &str| -> Vec<Value> {
+            arr.as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .take(20)
+                .map(|call| {
+                    let n = &call[key];
+                    let (nl, _) = sym_pos(n);
+                    json!({"name": n["name"].as_str().unwrap_or(""),
+                           "at": format!("{}:{}", rel(&root, n["uri"].as_str().unwrap_or("")), nl + 1)})
+                })
+                .collect()
+        };
+        if let Ok(inc) =
+            client.request("callHierarchy/incomingCalls", json!({"item": item.clone()}), 10_000)
+        {
+            callers = map_calls(inc, "from");
+        }
+        if let Ok(outg) =
+            client.request("callHierarchy/outgoingCalls", json!({"item": item}), 10_000)
+        {
+            callees = map_calls(outg, "to");
+        }
+    }
+    // Orçamento: assinatura SEMPRE; corpo (se include_source) só se couber; callers/callees listados.
+    let mut est = approx_tokens(&signature)
+        + callers.iter().chain(callees.iter()).map(|_| 6).sum::<usize>();
+    let fit_body = include_source && est + approx_tokens(&body_full) <= max_tokens;
+    if fit_body {
+        est += approx_tokens(&body_full);
+    }
+    let truncated = include_source && !fit_body;
+    Ok(json!({
+        "symbol": name_path,
+        "file": rel(&root, &uri),
+        "at": format!("{}:{}", file, sl + 1),
+        "signature": signature,
+        "body": if fit_body { json!(body_full) } else { Value::Null },
+        "callers": callers,
+        "callees": callees,
+        "token_estimate": est,
+        "max_tokens": max_tokens,
+        "truncated": truncated,
+        "note": "contexto por símbolo sob orçamento (def/assinatura + callers + callees). include_source inlina o corpo se couber. Os TIPOS da assinatura aparecem no texto; resolver a def de cada tipo é follow-up (#13)."
+    }))
+}
+
+// #12 — repo_map: mapa SIMBÓLICO rankeado do repositório sob orçamento, via o grafo do LSP (sem
+// embeddings). Ranking HEURÍSTICO (peso por kind + export/public + boost de focus); PageRank completo
+// sobre o grafo de referências é follow-up (registrado no #12 e no retorno).
+fn tool_repo_map(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let max_tokens = a["max_tokens"].as_u64().unwrap_or(8000) as usize;
+    let focus = a["focus"].as_str().map(|s| s.to_string());
+    let lang = a["lang"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| detect_langs(project).first().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if lang.is_empty() {
+        return Err("não detectei linguagem no projeto; informe 'lang'".into());
+    }
+    let mut files: Vec<String> = vec![];
+    for ext in lang_exts(&lang) {
+        files.extend(find_source_files(project, ext, 40));
+    }
+    files.sort();
+    files.dedup();
+    files.truncate(40);
+    let client = srv.client(project, env_backend(&lang))?;
+    // (score, file, name, kind_label, signature)
+    let mut entries: Vec<(f64, String, String, &'static str, String)> = vec![];
+    for rel_file in &files {
+        let abs = format!("{}/{}", project.trim_end_matches('/'), rel_file);
+        if client.ensure_open(&abs).is_err() {
+            continue;
+        }
+        let Ok(syms) = document_symbols(&client, &abs) else {
+            continue;
+        };
+        let ftxt = std::fs::read_to_string(&abs).unwrap_or_default();
+        let flines: Vec<&str> = ftxt.split('\n').collect();
+        // só declarações referenciáveis de topo: Class(5) Method(6) Enum(10) Interface(11)
+        // Function(12) Struct(23).
+        let mut flat: Vec<(String, u64, u64, u64)> = vec![];
+        flatten_symbols(&syms, "", &mut flat);
+        for (fp, k, l, _c) in &flat {
+            if !matches!(k, 5 | 6 | 10 | 11 | 12 | 23) {
+                continue;
+            }
+            let name = fp.clone();
+            let sig = flines
+                .get(*l as usize)
+                .map(|x| x.trim().to_string())
+                .unwrap_or_else(|| name.clone());
+            let klabel = kind_label_for_line(*k, &sig);
+            let mut score = match k {
+                5 | 11 => 3.0, // Class/Interface
+                10 | 12 | 23 => 2.0,
+                _ => 1.0,
+            };
+            if sig.starts_with("export")
+                || sig.contains("pub ")
+                || sig.starts_with("pub ")
+                || sig.contains("public ")
+            {
+                score += 1.0;
+            }
+            entries.push((score, rel_file.clone(), name, klabel, sig));
+        }
+    }
+    // Boost de focus (barato, sem LSP extra): focus pode ser um ARQUIVO ou um NOME de símbolo.
+    if let Some(fo) = &focus {
+        let focus_file = entries
+            .iter()
+            .find(|e| &e.2 == fo)
+            .map(|e| e.1.clone())
+            .or_else(|| files.iter().find(|f| f.as_str() == fo).cloned());
+        for e in &mut entries {
+            if &e.2 == fo {
+                e.0 += 3.0; // é o símbolo-focus
+            }
+            if Some(&e.1) == focus_file.as_ref() {
+                e.0 += 1.0; // mesmo arquivo do focus
+            }
+        }
+    }
+    let symbols_total = entries.len();
+    entries.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+    let mut out: Vec<Value> = vec![];
+    let mut est = 0usize;
+    let mut truncated = false;
+    for (score, f, name, klabel, sig) in &entries {
+        let t = approx_tokens(sig) + approx_tokens(f) + 4;
+        if est + t > max_tokens {
+            truncated = true;
+            break;
+        }
+        est += t;
+        out.push(json!({"file": f, "name": name, "kind": klabel, "signature": sig, "score": score}));
+    }
+    Ok(json!({
+        "lang": lang,
+        "files_scanned": files.len(),
+        "symbols_total": symbols_total,
+        "symbols": out,
+        "token_estimate": est,
+        "max_tokens": max_tokens,
+        "truncated": truncated,
+        "focus": focus,
+        "ranking": "heurístico (peso por kind + export/public + boost de focus). Varre até 40 arquivos (prioriza src/lib). PageRank sobre o grafo de referências é follow-up (#12)."
+    }))
+}
+
 // Fase 5: roda o build/check da linguagem NO DISCO e reporta erros (pega o que a simulação
 // em memória não vê — ex.: erros de `cargo check` no Rust). Standalone: chame após um apply.
 fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
@@ -4710,6 +4920,35 @@ fn tools_schema() -> Value {
                 "properties": {},
                 "required": []
             }
+        },
+        {
+            "name": "symbol_bundle",
+            "description": "Contexto por SÍMBOLO sob orçamento de tokens (issue #13): devolve assinatura + (opcional) corpo + callers (call_hierarchy incoming) + callees (outgoing) de um símbolo, cortado a max_tokens. Carregue contexto por símbolo em vez de ler o arquivo inteiro. 'symbol' aceita name_path ('Classe/metodo'). Via LSP (preciso); use o daemon p/ índice quente.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string", "description": "arquivo onde o símbolo é declarado (p/ resolvê-lo)"},
+                    "symbol": {"type": "string", "description": "nome ou name_path ('Classe/metodo')"},
+                    "line": {"type": "integer", "description": "opcional: 1-indexed p/ desambiguar homônimos"},
+                    "max_tokens": {"type": "integer", "description": "orçamento (default 4000)"},
+                    "include_source": {"type": "boolean", "description": "inlina o corpo completo se couber no orçamento (default false)"}
+                },
+                "required": ["project", "file", "symbol"]
+            }
+        },
+        {
+            "name": "repo_map",
+            "description": "Mapa SIMBÓLICO rankeado do repositório sob orçamento (issue #12), via o grafo do language server — SEM embeddings. Orienta o agente rápido: lista os símbolos mais importantes (classes/funções/tipos exportados) com assinatura, rankeados, cortado a max_tokens. 'focus' (arquivo ou nome de símbolo) enviesa o ranking p/ a vizinhança relevante. Ranking heurístico (kind + export/public + focus); varre até 40 arquivos (prioriza src/lib).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "lang": {"type": "string", "description": "opcional: typescript|python|rust|dart|csharp (senão detecta)"},
+                    "max_tokens": {"type": "integer", "description": "orçamento (default 8000)"},
+                    "focus": {"type": "string", "description": "opcional: arquivo ou nome de símbolo p/ enviesar o ranking"}
+                },
+                "required": ["project"]
+            }
         }
     ]);
     // Issue #10 — tool annotations (MCP). Marca as tools de NAVEGAÇÃO/leitura com readOnlyHint:true
@@ -4721,6 +4960,8 @@ fn tools_schema() -> Value {
         "find_symbol",
         "workspace_symbols",
         "call_hierarchy",
+        "symbol_bundle",
+        "repo_map",
         "blast_radius",
         "doctor",
         "preview_edit",
@@ -4747,6 +4988,8 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         "find_symbol" => tool_find_symbol(srv, args),
         "workspace_symbols" => tool_workspace_symbols(srv, args),
         "call_hierarchy" => tool_call_hierarchy(srv, args),
+        "symbol_bundle" => tool_symbol_bundle(srv, args),
+        "repo_map" => tool_repo_map(srv, args),
         "extract_function" => tool_extract_function(srv, args),
         "move_symbol" => tool_move_symbol(srv, args),
         "organize_imports" => tool_organize_imports(srv, args),
@@ -5784,15 +6027,14 @@ mod tests {
         }
     }
 
-    // G1: a superfície é de 23 tools (22 anteriores + `instructions`), todas com nome+schema.
+    // G1: superfície de 25 tools (23 + symbol_bundle #13 + repo_map #12), todas com nome+schema.
     #[test]
-    fn tools_schema_has_23_tools_incl_instructions() {
+    fn tools_schema_has_all_tools_incl_instructions() {
         let schema = tools_schema();
         let arr = schema.as_array().expect("schema é array");
-        assert_eq!(arr.len(), 23, "23 tools no total (22 + instructions)");
-        assert!(
-            arr.iter().any(|t| t["name"] == "instructions"),
-            "a tool `instructions` está no schema"
-        );
+        assert_eq!(arr.len(), 25, "25 tools (23 + symbol_bundle + repo_map)");
+        for n in ["instructions", "symbol_bundle", "repo_map"] {
+            assert!(arr.iter().any(|t| t["name"] == n), "tool `{n}` no schema");
+        }
     }
 }
