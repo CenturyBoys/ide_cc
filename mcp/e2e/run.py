@@ -195,7 +195,11 @@ def main():
     if not Path(BIN).exists():
         print(f"!! binário não encontrado: {BIN}\n   build: cargo build --release --manifest-path mcp/Cargo.toml")
         sys.exit(2)
-    cases_file = HERE / ("cases-real.json" if real else "cases.json")
+    # CODE_INTEL_E2E_CASES: arquivo de casos alternativo (ex.: cases-real-fixtures.json com OSS
+    # famoso pinado — Camada 1 do #16, roda à parte do e2e por-PR). Senão: cases.json / cases-real.json.
+    cases_file = HERE / (
+        os.environ.get("CODE_INTEL_E2E_CASES") or ("cases-real.json" if real else "cases.json")
+    )
     blocks = json.loads(cases_file.read_text())
     if real:
         repo = os.environ.get("CODE_INTEL_E2E_REPO")

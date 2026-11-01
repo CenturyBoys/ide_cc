@@ -32,9 +32,18 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 - **Gaps enumeráveis / verificação (issue #14):** `find_references` e `blast_radius` passam a devolver
   um campo `verification` `{grep, rationale, possibly_incomplete}` — o `grep` EXATO para o agente
   cross-checar o `count` semântico e enumerar o que o LSP possa ter deixado de fora (operacionaliza a
-  honestidade). `possibly_incomplete` é conservador (liga no índice frio/`stable:false`); o sinal
-  forte de incompletude silenciosa (ex.: Python openFilesOnly) continua sendo o cross-check
-  grep + `doctor`, apontado no `rationale`.
+  honestidade). `possibly_incomplete` liga quando o índice está frio (`stable:false`) **OU quando o
+  ambiente está degradado no arquivo do símbolo** (`file_env_degraded` — imports/@types/deps
+  não-resolvidos), pegando o caso pachamama (openFilesOnly) que o gate de warmup sozinho não via.
+  (Melhoria descoberta ao testar em repo real — ver fixtures reais abaixo.)
+- **Fixtures de repo REAL pinado por linguagem (Camada 1 do #16):** `benchmarks/scripts/setup-real-fixtures.sh`
+  baixa OSS famoso pinado em `fixtures/real/<lang>` (GITIGNORED) — **zod** (TS), **requests** (Py),
+  **ripgrep** (Rust), **collection** (Dart), **Newtonsoft.Json** (C#) — roda o pré-requisito de cada
+  linguagem e grava os SHAs em `VERSIONS.txt`. `mcp/e2e/cases-real-fixtures.json` asserta escala/
+  correção com símbolos-oráculo (ex.: `Response`≥3, `QueueList`~104, `ZodError`=98), cross-checados
+  com o `verification.grep` (#14). `run.py` ganhou `CODE_INTEL_E2E_CASES=<arquivo>` para rodar esse
+  catálogo à parte do e2e por-PR. Python/Dart passam out-of-the-box; TS(zod)/Rust(ripgrep) são `xfail`
+  local (cold-start pesado → daemon quente/CI); C# pula sem dotnet (roda no CI).
 - **`operation_summary` (issue #15):** toda edit-tool (rename/extract/move/change_signature/
   safe_delete/…) devolve um rótulo legível da operação ("rename: N edição(ões) em M arquivo(s),
   net_delta Z — preview/APLICADO"), derivado do nome da op + `blast_radius`/`creates`/`net_delta`.

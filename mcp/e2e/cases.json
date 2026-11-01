@@ -381,6 +381,15 @@
           {"path": "type_check_reliable", "op": "==", "value": false},
           {"path": "reliability.signal", "op": "==", "value": "config_env_unresolved"}
         ]
+      },
+      {
+        "name": "DEGRADADO PY (#14): find_references marca possibly_incomplete=true em env degradado (não só índice frio)",
+        "tool": "find_references",
+        "args": {"file": "app.py", "symbol": "compute", "summary": true},
+        "assert": [
+          {"path": "verification.possibly_incomplete", "op": "==", "value": true},
+          {"path": "verification.grep", "op": "present"}
+        ]
       }
     ]
   }

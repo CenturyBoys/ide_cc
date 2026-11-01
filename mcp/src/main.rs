@@ -1774,12 +1774,30 @@ fn tool_safe_apply(srv: &Server, a: &Value) -> Result<Value, String> {
 // #14 (issue #14): "gaps enumeráveis" — toda contagem semântica (find_references/blast_radius) vem
 // com o grep EXATO p/ o agente CROSS-CHECAR e enumerar o que o LSP possa ter deixado de fora
 // (operacionaliza a honestidade: "não confie cego; aqui está como verificar o que faltou").
-fn verification_hint(project: &str, symbol: &str, stable: bool) -> Value {
+// Ambiente degradado NO ARQUIVO do símbolo (barato: 1 arquivo): assinatura de config não-resolvida
+// (reportMissingImports, process sem @types, etc.) => find_references pode sair INCOMPLETO em
+// silêncio (caso pachamama). Sinal que o warmup gate (stable) NÃO cobre.
+fn file_env_degraded(client: &LspClient, abs: &str, lang: &str) -> bool {
+    let diags = if client.supports_pull() {
+        client.pull_diagnostics(abs).unwrap_or_default()
+    } else {
+        client.pushed_diagnostics(abs)
+    };
+    diags.iter().any(|d| is_config_signature_error(lang, d))
+}
+fn verification_hint(project: &str, symbol: &str, stable: bool, env_degraded: bool) -> Value {
     let base = base_name(symbol.rsplit('/').next().unwrap_or(symbol));
+    let rationale = if env_degraded {
+        "AMBIENTE DEGRADADO detectado (imports/@types/deps não-resolvidos) → o `count` semântico pode estar INCOMPLETO em silêncio. Rode `doctor` (env_resolution) e corrija o setup; cross-check com o grep."
+    } else {
+        "`count` é SEMÂNTICO (só usos reais; exclui a definição, strings, comentários e homônimos). Compare com o grep: diferença grande + `doctor` acusando ambiente degradado = possível incompletude."
+    };
     json!({
         "grep": format!("grep -rnw '{base}' {project}"),
-        "rationale": "`count` é SEMÂNTICO (só usos reais; exclui a definição, strings, comentários e homônimos). Compare com o grep: se o grep for MUITO maior E `doctor` acusar ambiente degradado (venv/tsconfig/deps faltando), o resultado pode estar INCOMPLETO em silêncio — rode `doctor`.",
-        "possibly_incomplete": !stable
+        "rationale": rationale,
+        // !stable (índice frio) OU ambiente degradado (config não-resolvida) — cobre o caso pachamama
+        // que o gate de warmup sozinho não pegava.
+        "possibly_incomplete": !stable || env_degraded
     })
 }
 
@@ -1844,6 +1862,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
     let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c, None)?;
+    let env_degraded = file_env_degraded(&client, &abs, build_lang(file));
     let warning = if stable {
         Value::Null
     } else {
@@ -1867,7 +1886,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
             "warmup_ms": warmup_ms,
             "polls": polls,
             "by_file": by_file,
-            "verification": verification_hint(project, symbol, stable),
+            "verification": verification_hint(project, symbol, stable, env_degraded),
         }));
     }
     // I1: cada referência vira `path:line:content` + ~2 linhas de contexto (via helper compartilhado),
@@ -1904,7 +1923,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
         "polls": polls,
         "references": locs,
         "by_file": grouped,
-        "verification": verification_hint(project, symbol, stable),
+        "verification": verification_hint(project, symbol, stable, env_degraded),
     }))
 }
 
@@ -2633,6 +2652,7 @@ fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
             "error": "index_not_ready", "detail": index_not_ready_hint(),
         }));
     }
+    let env_degraded = file_env_degraded(&client, &abs, build_lang(file));
 
     let root = client.root().to_string();
     let mut cache = SourceCache::default();
@@ -2719,7 +2739,7 @@ fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
         "affected_files": export_files.into_iter().collect::<Vec<_>>(),
         "references": {"non_test": refs_prod, "test": refs_test},
         "callers": {"non_test": callers_prod, "test": callers_test},
-        "verification": verification_hint(project, symbol, stable),
+        "verification": verification_hint(project, symbol, stable, env_degraded),
         "note": "read-only: composto sobre find_references (warmup-gated) + call_hierarchy. Use antes de editar para ver a superfície de risco.",
     }))
 }
