@@ -525,18 +525,51 @@ fn kind_name(k: u64) -> &'static str {
     }
 }
 
-// Relatório suite-completa: csharp-ls rotula `record` (tipo referência) como kind Class (o LSP não
-// tem kind "Record"; `record struct` já vem como Struct). Heurístico barato: se é Class e a linha
-// do identificador tem o token `record`, rotula "Record". As linhas já estão carregadas p/ refine_at.
+// Normaliza o rótulo de kind a partir da LINHA do identificador, cobrindo construtos que o LSP
+// rotula de forma inconsistente:
+//  - C# `record` (tipo referência) vem como kind Class (o LSP não tem kind "Record"; `record struct`
+//    já vem Struct) → rotula "Record".
+//  - Dart `extension`/`mixin` vêm com kind DIVERGENTE entre document_symbols (Namespace=3) e
+//    workspace_symbols (Class=5) (N5 da issue #4) → normaliza para "Extension"/"Mixin" nos dois.
+fn kind_label_for_line(k: u64, src: &str) -> &'static str {
+    let t = src.trim_start();
+    // Dart: declaração começa com a keyword no início da linha (top-level).
+    if (k == 3 || k == 5) && t.starts_with("extension ") {
+        return "Extension";
+    }
+    if (k == 3 || k == 5) && t.starts_with("mixin ") {
+        return "Mixin";
+    }
+    if k == 5
+        && src
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|w| w == "record")
+    {
+        return "Record";
+    }
+    kind_name(k)
+}
+// Variante que indexa a linha num slice já carregado (document_symbols/find_symbol têm as linhas).
 fn kind_label(k: u64, lines: &[&str], line0: u64) -> &'static str {
-    if k == 5 {
-        if let Some(src) = lines.get(line0 as usize) {
-            if src
-                .split(|c: char| !c.is_alphanumeric() && c != '_')
-                .any(|w| w == "record")
-            {
-                return "Record";
+    if let Some(src) = lines.get(line0 as usize) {
+        return kind_label_for_line(k, src);
+    }
+    kind_name(k)
+}
+// Varredura sobre VÁRIAS linhas candidatas (workspace_symbols não tem o arquivo carregado e o Dart
+// aponta o símbolo para a linha do doc-comment `///`, não para a declaração). Procura a keyword em
+// content+context; itens de context vêm como "N: <linha>", então removemos o prefixo numérico.
+fn kind_label_scan(k: u64, candidates: &[String]) -> &'static str {
+    for c in candidates {
+        let line = match c.split_once(": ") {
+            Some((n, rest)) if !n.is_empty() && n.trim().chars().all(|ch| ch.is_ascii_digit()) => {
+                rest
             }
+            _ => c.as_str(),
+        };
+        let lbl = kind_label_for_line(k, line);
+        if lbl != kind_name(k) {
+            return lbl;
         }
     }
     kind_name(k)
@@ -1049,6 +1082,158 @@ fn collect_errors(client: &LspClient, files: &[String], min_gen: u64) -> BTreeSe
     }
 }
 
+// --- Assinatura de AMBIENTE DEGRADADO (config não-resolvida) por linguagem ------------------------
+// Erros cuja PRESENÇA denuncia que o language server NÃO resolveu o ambiente do projeto
+// (tsconfig/@types, venv/imports, grafo de crates, `pub get`) — NÃO um erro real de código. São
+// EXCLUÍDOS do net_delta (senão ruído de config recusaria edição legítima) e marcam o veredito de
+// tipo como NÃO-CONFIÁVEL. Tabela verificada empiricamente (TS/Python/Dart/Rust via LSP real); C#
+// por documentação (ver plano / docs/LANGUAGE-SETUP.md). ~Nunca disparam num projeto bem configurado.
+fn diag_code(d: &Value) -> Option<i64> {
+    d.get("code").and_then(|c| {
+        c.as_i64()
+            .or_else(|| c.as_str().and_then(|s| s.parse().ok()))
+    })
+}
+fn diag_code_str(d: &Value) -> Option<&str> {
+    d.get("code").and_then(|c| c.as_str())
+}
+fn is_config_signature_error(lang: &str, d: &Value) -> bool {
+    match lang {
+        // 2580/2591 process/require/Buffer sem @types/node; 2318 tipo global faltando (lib); 2688
+        // "Cannot find type definition file"; 6053 arquivo fora de qualquer tsconfig (monorepo pnpm
+        // sem raiz → inferred-project).
+        "typescript" => matches!(diag_code(d), Some(2580 | 2591 | 2318 | 2688 | 6053)),
+        // pyright/basedpyright: imports não-resolvidos (venv/include faltando → openFilesOnly).
+        "python" => matches!(
+            diag_code_str(d),
+            Some("reportMissingImports" | "reportMissingModuleSource")
+        ),
+        // rust-analyzer in-memory: crate externo / extern crate não-resolvido (deps não indexadas,
+        // índice frio). NÃO inclui E0583 (mod file faltando) nem E0432-de-path-interno — esses são
+        // erro REAL de código. Códigos vêm como string ("E0432", "unresolved-import").
+        "rust" => matches!(
+            diag_code_str(d),
+            Some("unresolved-import" | "unresolved-extern-crate" | "E0432" | "E0463")
+        ),
+        // dart: "Target of URI doesn't exist" (pub get não rodou / dep ausente) e variante de código
+        // gerado ainda não produzido.
+        "dart" => matches!(
+            diag_code_str(d),
+            Some("uri_does_not_exist" | "uri_has_not_been_generated")
+        ),
+        // C#: tipo/namespace não encontrado (projeto/solução não carregada). Documentado; no ambiente
+        // de dev local não há dotnet/csharp-ls — coberto por unit test + CI.
+        "csharp" => matches!(diag_code_str(d), Some("CS0246" | "CS0234")),
+        _ => false,
+    }
+}
+// Erros de assinatura de config presentes nos arquivos, no MESMO formato de chave de collect_errors
+// (file|line|msg) — para subtraí-los do net_delta e amostrar no aviso. Lê o estado ATUAL de
+// diagnostics (mesma janela que collect_errors acabou de estabilizar), então deve ser chamado logo
+// após o collect_errors correspondente.
+fn collect_config_sig(lang: &str, client: &LspClient, files: &[String]) -> BTreeSet<String> {
+    let mut s = BTreeSet::new();
+    for f in files {
+        let diags = if client.supports_pull() {
+            client.pull_diagnostics(f).unwrap_or_default()
+        } else {
+            client.pushed_diagnostics(f)
+        };
+        for d in &diags {
+            if is_config_signature_error(lang, d) {
+                if let Some(k) = err_key(f, d) {
+                    s.insert(k);
+                }
+            }
+        }
+    }
+    s
+}
+// Dica ACIONÁVEL por linguagem (para agents autônomos): (cause, impact, fix.summary, fix.commands,
+// doc). Fonte ÚNICA reutilizada pelo net_delta (campo `reliability`) e pelo doctor
+// (`env_resolution` + `workspace_config.fix_commands`). "Quanto mais auto-explicativo, melhor."
+fn env_fix_hint(
+    lang: &str,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    Vec<&'static str>,
+    &'static str,
+) {
+    match lang {
+        "typescript" => (
+            "o language server não resolveu o ambiente TS (tsconfig/@types) destes arquivos — ex.: monorepo pnpm sem tsconfig na raiz (tsgo cai em inferred-project) ou pacote não coberto",
+            "erros de ambiente foram EXCLUÍDOS do net_delta; o veredito de TIPO não é confiável — use validate_build (TS_CHECK_CMD) ou o CI como juiz",
+            "garanta que o tsconfig do pacote cobre o arquivo e que @types/node é resolvível",
+            vec![
+                "pnpm install",
+                "# confira o tsconfig do pacote: extends da base + include cobrindo o arquivo; @types/node instalado",
+            ],
+            "docs/LANGUAGE-SETUP.md#typescript",
+        ),
+        "python" => (
+            "imports não-resolvidos — basedpyright sem venv/include (cai em openFilesOnly): não enxerga as dependências do ambiente",
+            "find_references pode sair INCOMPLETO e o net_delta de tipos é não-confiável; use validate_build (PYTHON_CHECK_CMD) ou o CI",
+            "configure pyrightconfig.json (include + venvPath/venv) e instale as deps no venv",
+            vec![
+                "python -m venv .venv && . .venv/bin/activate",
+                "pip install -r requirements.txt",
+                "# doctor fix=true cria o pyrightconfig.json automaticamente",
+            ],
+            "docs/LANGUAGE-SETUP.md#python",
+        ),
+        "rust" => (
+            "crate/dependência externa não-resolvida — grafo de crates não indexado (índice frio) ou deps não baixadas",
+            "o net_delta em memória NÃO vê o cargo check; use validate_build (verify_build:true / RUST_CHECK_CMD) ou o CI como juiz",
+            "baixe/indexe as dependências e aguarde o rust-analyzer terminar o cargo metadata",
+            vec![
+                "cargo fetch",
+                "cargo check",
+                "# aumente CODE_INTEL_WARMUP_MS se o índice estiver frio",
+            ],
+            "docs/LANGUAGE-SETUP.md#rust",
+        ),
+        "dart" => (
+            "URI de import inexistente — `dart pub get` não rodou (sem .dart_tool/package_config.json) ou dep ausente",
+            "find_references/net_delta podem sair incompletos; use validate_build (DART_CHECK_CMD) ou o CI",
+            "rode pub get para gerar o package_config.json",
+            vec!["dart pub get", "# ou, em Flutter: flutter pub get"],
+            "docs/LANGUAGE-SETUP.md#dart",
+        ),
+        "csharp" => (
+            "tipo/namespace não-resolvido — projeto/solução não carregada (sem restore) ou .NET SDK ausente",
+            "o net_delta é não-confiável; use validate_build (CSHARP_CHECK_CMD=dotnet build) ou o CI",
+            "restaure o projeto e garanta o .NET SDK no PATH",
+            vec!["dotnet restore", "# garanta DOTNET_ROOT e o SDK instalado"],
+            "docs/LANGUAGE-SETUP.md#csharp",
+        ),
+        _ => (
+            "ambiente do projeto não-resolvido pelo language server",
+            "veredito não-confiável; use o build real (validate_build) ou o CI",
+            "verifique a config do workspace (ver docs)",
+            vec![],
+            "docs/LANGUAGE-SETUP.md",
+        ),
+    }
+}
+// Monta o objeto `reliability` auto-explicativo (what/why/impact/fix) quando o ambiente está
+// degradado. `evidence` = amostras de diagnostics de assinatura de config (file:line: msg).
+fn reliability_degraded(lang: &str, evidence: Vec<String>) -> Value {
+    let (cause, impact, summary, commands, doc) = env_fix_hint(lang);
+    json!({
+        "verdict": "degraded",
+        "dimension": "type_check",
+        "lang": lang,
+        "signal": "config_env_unresolved",
+        "evidence": evidence,
+        "cause": cause,
+        "impact": impact,
+        "fix": {"summary": summary, "commands": commands, "doc": doc},
+        "confidence": "high",
+    })
+}
+
 // resource ops de criação de arquivo no WorkspaceEdit (ex.: 'move to new file')
 fn creates_from(edit: &Value) -> Vec<String> {
     let mut v = vec![];
@@ -1225,6 +1410,10 @@ fn verify_and_apply(
         client.did_change(f, &originals[f]);
     }
     let before = collect_errors(client, &existing, g0);
+    // B: erros de ASSINATURA DE CONFIG no baseline (tsgo não resolveu tsconfig/@types). Capturados
+    // AQUI (server ainda no texto original) para marcar o veredito como não-confiável e tirá-los do
+    // net_delta — senão um `process` pré-existente poluiria a conta.
+    let cfg_before = collect_config_sig(lang, client, &existing);
 
     // SIMULA em memória: existentes via didChange; novos via didOpen com o texto novo
     let g1 = client.diag_gen();
@@ -1237,11 +1426,26 @@ fn verify_and_apply(
         }
     }
     let after = collect_errors(client, &affected, g1);
+    let cfg_after = collect_config_sig(lang, client, &affected);
 
-    let introduced: Vec<String> = after.difference(&before).cloned().collect();
-    let resolved: Vec<String> = before.difference(&after).cloned().collect();
+    // EXCLUI os erros de assinatura de config do net_delta: num ambiente de tipos degradado eles são
+    // ruído (globals/aliases), não erros reais — contá-los recusaria edições legítimas em silêncio.
+    let introduced: Vec<String> = after
+        .difference(&before)
+        .filter(|k| !cfg_after.contains(*k))
+        .cloned()
+        .collect();
+    let resolved: Vec<String> = before
+        .difference(&after)
+        .filter(|k| !cfg_before.contains(*k))
+        .cloned()
+        .collect();
     let net_delta = introduced.len() as i64 - resolved.len() as i64;
     let safe = net_delta <= 0;
+    // Confiabilidade do veredito de TIPO: se o baseline OU o pós-edição tem assinatura de config
+    // degradada, o net_delta NÃO é type-check confiável aqui (ver is_config_signature_error /
+    // doctor). Inclui cfg_after p/ pegar o caso em que a edição cria um arquivo que usa globals.
+    let type_check_reliable = cfg_before.is_empty() && cfg_after.is_empty();
 
     let creates_set: std::collections::HashSet<String> = creates.iter().cloned().collect();
     let mut applied;
@@ -1306,17 +1510,44 @@ fn verify_and_apply(
     }
 
     let root = client.root().to_string();
+    let generated_files: Vec<Value> = per_file
+        .iter()
+        .filter(|f| f["generated"].as_bool().unwrap_or(false))
+        .map(|f| f["file"].clone())
+        .collect();
     Ok(json!({
         "applied": applied,
         "safe": safe,
         "net_delta": net_delta,
+        "type_check_reliable": type_check_reliable,
+        // Objeto auto-explicativo (what/why/impact/fix com comandos) — presente SÓ quando degradado;
+        // no caminho feliz o agent lê só o bool acima. Evidências = amostras dos erros de config.
+        "reliability": if type_check_reliable { Value::Null } else {
+            let evidence: Vec<String> = cfg_before.iter().chain(cfg_after.iter())
+                .take(3).map(|k| rel_diag(&root, k)).collect();
+            reliability_degraded(lang, evidence)
+        },
         "errors_introduced": introduced.iter().map(|k| rel_diag(&root, k)).collect::<Vec<_>>(),
         "errors_resolved": resolved.iter().map(|k| rel_diag(&root, k)).collect::<Vec<_>>(),
         "blast_radius": {"files": files_n, "edits": edits_n},
         "creates": creates.iter().map(|c| rel(&root, &path_to_uri(c))).collect::<Vec<_>>(),
         "changes": per_file,
+        // N6 (issue #4): arquivos GERADOS tocados pela edição — descartáveis (re-rode o codegen).
+        "generated_files": generated_files,
         "build_ok": build_ok,
         "build_errors": build_errors,
+        // Issue #11 — limite explícito do verificador: todo verificador é PROXY do intento (sofre
+        // falso-positivo E falso-negativo). Dizemos ao agente o que o gate cobre e o que NÃO cobre.
+        "verifier": {
+            "dimension": if build_ok.is_null() { "type (net_delta, em memória)" } else { "type (net_delta) + build (disco)" },
+            "scope": "net_delta = diagnostics do language server em MEMÓRIA (erros de ambiente de config são excluídos)",
+            "limits": if build_ok.is_null() {
+                "NÃO vê erros que só o build externo pega (ex.: cargo check/flycheck no Rust — use verify_build:true); NÃO confirma a intenção, só ausência de erros novos"
+            } else {
+                "o build no disco cobre o que a simulação em memória não vê; ainda assim pass/fail NÃO confirma a INTENÇÃO nem executa a suíte de testes"
+            },
+            "confidence": "proxy do intento — pass não garante correto; fail não garante errado"
+        },
         "note": note,
     }))
 }
@@ -1542,6 +1773,83 @@ fn tool_safe_apply(srv: &Server, a: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
+// #14 (issue #14): "gaps enumeráveis" — toda contagem semântica (find_references/blast_radius) vem
+// com o grep EXATO p/ o agente CROSS-CHECAR e enumerar o que o LSP possa ter deixado de fora
+// (operacionaliza a honestidade: "não confie cego; aqui está como verificar o que faltou").
+// Ambiente degradado NO ARQUIVO do símbolo (barato: 1 arquivo): assinatura de config não-resolvida
+// (reportMissingImports, process sem @types, etc.) => find_references pode sair INCOMPLETO em
+// silêncio (caso pachamama). Sinal que o warmup gate (stable) NÃO cobre.
+fn file_env_degraded(client: &LspClient, abs: &str, lang: &str) -> bool {
+    let diags = if client.supports_pull() {
+        client.pull_diagnostics(abs).unwrap_or_default()
+    } else {
+        client.pushed_diagnostics(abs)
+    };
+    diags.iter().any(|d| is_config_signature_error(lang, d))
+}
+fn verification_hint(project: &str, symbol: &str, stable: bool, env_degraded: bool) -> Value {
+    let base = base_name(symbol.rsplit('/').next().unwrap_or(symbol));
+    let rationale = if env_degraded {
+        "AMBIENTE DEGRADADO detectado (imports/@types/deps não-resolvidos) → o `count` semântico pode estar INCOMPLETO em silêncio. Rode `doctor` (env_resolution) e corrija o setup; cross-check com o grep."
+    } else {
+        "`count` é SEMÂNTICO (só usos reais; exclui a definição, strings, comentários e homônimos). Compare com o grep: diferença grande + `doctor` acusando ambiente degradado = possível incompletude."
+    };
+    json!({
+        "grep": format!("grep -rnw '{base}' {project}"),
+        "rationale": rationale,
+        // !stable (índice frio) OU ambiente degradado (config não-resolvida) — cobre o caso pachamama
+        // que o gate de warmup sozinho não pegava.
+        "possibly_incomplete": !stable || env_degraded
+    })
+}
+
+// #15 (issue #15): rótulo semântico LEVE de uma edição, derivado do NOME da operação + o
+// blast_radius/creates/net_delta que o verify_and_apply já computou. None quando `v` não é um
+// resultado de edição (sem blast_radius/net_delta) — injetado uma vez em call_tool.
+fn operation_summary(tool: &str, v: &Value) -> Option<String> {
+    let br = v.get("blast_radius");
+    if br.is_none() && v.get("net_delta").is_none() {
+        return None;
+    }
+    let verb = match tool {
+        "rename_symbol" => "rename",
+        "extract_function" => "extract function",
+        "move_symbol" => "move symbol",
+        "move_file" => "move file",
+        "change_signature" => "change signature",
+        "safe_delete" => "safe delete",
+        "organize_imports" => "organize imports",
+        "quick_fix" => "quick fix",
+        "replace_symbol_body" => "replace body",
+        "insert_before_symbol" => "insert before",
+        "insert_after_symbol" => "insert after",
+        "safe_apply" | "preview_edit" | "simulate_edit" => "edit",
+        _ => return None,
+    };
+    let files = br.and_then(|b| b["files"].as_u64()).unwrap_or(0);
+    let edits = br.and_then(|b| b["edits"].as_u64()).unwrap_or(0);
+    let creates = v
+        .get("creates")
+        .and_then(|c| c.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mut s = format!("{verb}: {edits} edição(ões) em {files} arquivo(s)");
+    if creates > 0 {
+        s.push_str(&format!(", cria {creates} arquivo(s)"));
+    }
+    if let Some(d) = v.get("net_delta").and_then(|n| n.as_i64()) {
+        s.push_str(&format!(", net_delta {d}"));
+    }
+    s.push_str(
+        if v.get("applied").and_then(|x| x.as_bool()).unwrap_or(false) {
+            " — APLICADO"
+        } else {
+            " — preview (não aplicado)"
+        },
+    );
+    Some(s)
+}
+
 fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"]
         .as_str()
@@ -1558,6 +1866,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
     let (l, c) = resolve_pos(&client, &abs, symbol, line)?;
     let uri = path_to_uri(&abs);
     let (refs, stable, warmup_ms, polls) = warmup_references(&client, &uri, l, c, None)?;
+    let env_degraded = file_env_degraded(&client, &abs, build_lang(file));
     let warning = if stable {
         Value::Null
     } else {
@@ -1581,6 +1890,7 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
             "warmup_ms": warmup_ms,
             "polls": polls,
             "by_file": by_file,
+            "verification": verification_hint(project, symbol, stable, env_degraded),
         }));
     }
     // I1: cada referência vira `path:line:content` + ~2 linhas de contexto (via helper compartilhado),
@@ -1617,19 +1927,48 @@ fn tool_find_references(srv: &Server, a: &Value) -> Result<Value, String> {
         "polls": polls,
         "references": locs,
         "by_file": grouped,
+        "verification": verification_hint(project, symbol, stable, env_degraded),
     }))
+}
+
+// N6 (issue #4): arquivos GERADOS por codegen (regenerados por build_runner/protoc/tsc etc.). Uma
+// edição semântica que os toca é tecnicamente correta p/ consistência imediata, mas descartável —
+// o agent deve re-rodar o codegen em vez de confiar no patch. Sinalizamos para não confundir.
+fn is_generated_file(path: &str) -> bool {
+    let p = path.rsplit('/').next().unwrap_or(path);
+    const SUFFIXES: &[&str] = &[
+        ".g.dart",
+        ".freezed.dart",
+        ".gr.dart",
+        ".config.dart",
+        ".pb.dart", // Dart (build_runner / protoc)
+        ".d.ts",
+        ".generated.ts", // TypeScript
+        "_pb2.py",
+        "_pb2_grpc.py", // Python protobuf
+        ".g.cs",
+        ".designer.cs",
+        ".generated.cs", // C#
+        ".pb.go",        // Go protobuf
+    ];
+    SUFFIXES.iter().any(|s| p.ends_with(s))
 }
 
 fn summarize_edit(edit: &Value, root: &str) -> (u64, u64, Vec<Value>) {
     let mut files = 0u64;
     let mut edits = 0u64;
     let mut per_file = vec![];
+    let push = |uri: &str, n: u64, per_file: &mut Vec<Value>| {
+        let r = rel(root, uri);
+        let gen = is_generated_file(&r);
+        per_file.push(json!({"file": r, "edits": n, "generated": gen}));
+    };
     if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
         for (uri, arr) in changes {
             let n = arr.as_array().map(|a| a.len()).unwrap_or(0) as u64;
             files += 1;
             edits += n;
-            per_file.push(json!({"file": rel(root, uri), "edits": n}));
+            push(uri, n, &mut per_file);
         }
     }
     if let Some(dc) = edit.get("documentChanges").and_then(|c| c.as_array()) {
@@ -1638,7 +1977,7 @@ fn summarize_edit(edit: &Value, root: &str) -> (u64, u64, Vec<Value>) {
                 let uri = change["textDocument"]["uri"].as_str().unwrap_or("");
                 files += 1;
                 edits += arr.len() as u64;
-                per_file.push(json!({"file": rel(root, uri), "edits": arr.len()}));
+                push(uri, arr.len() as u64, &mut per_file);
             }
         }
     }
@@ -2317,6 +2656,7 @@ fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
             "error": "index_not_ready", "detail": index_not_ready_hint(),
         }));
     }
+    let env_degraded = file_env_degraded(&client, &abs, build_lang(file));
 
     let root = client.root().to_string();
     let mut cache = SourceCache::default();
@@ -2403,6 +2743,7 @@ fn tool_blast_radius(srv: &Server, a: &Value) -> Result<Value, String> {
         "affected_files": export_files.into_iter().collect::<Vec<_>>(),
         "references": {"non_test": refs_prod, "test": refs_test},
         "callers": {"non_test": callers_prod, "test": callers_test},
+        "verification": verification_hint(project, symbol, stable, env_degraded),
         "note": "read-only: composto sobre find_references (warmup-gated) + call_hierarchy. Use antes de editar para ver a superfície de risco.",
     }))
 }
@@ -3216,7 +3557,7 @@ fn tool_find_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
             let (rl, rc) = refine_at(&flines, fp, *l, *c);
             let mut loc = format_location(&mut cache, &root, &abs, rl, rc);
             loc["at"] = json!(format!("{}:{}", rl + 1, rc + 1));
-            json!({"name_path": fp, "kind": kind_name(*k),
+            json!({"name_path": fp, "kind": kind_label(*k, &flines, rl),
                    "at": loc["at"].clone(), "content": loc["content"].clone(), "context": loc["context"].clone()})
         })
         .collect();
@@ -3350,8 +3691,19 @@ fn tool_workspace_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
             let (l, c) = sym_pos(s);
             let uri = s["location"]["uri"].as_str().unwrap_or("");
             let loc = format_location_uri(&mut cache, &root, uri, l, c);
+            // N5: normaliza extension/mixin (Dart) e record (C#) p/ `kind` consistente com
+            // document_symbols/find_symbol. Varre content+context porque o Dart aponta o símbolo
+            // para a linha do doc-comment, não para a declaração em si.
+            let mut cands: Vec<String> = vec![];
+            if let Some(s) = loc["content"].as_str() {
+                cands.push(s.to_string());
+            }
+            if let Some(ctx) = loc["context"].as_array() {
+                cands.extend(ctx.iter().filter_map(|v| v.as_str().map(String::from)));
+            }
+            let kind = kind_label_scan(s["kind"].as_u64().unwrap_or(0), &cands);
             json!({"name": s["name"].as_str().unwrap_or(""),
-                   "kind": kind_name(s["kind"].as_u64().unwrap_or(0)),
+                   "kind": kind,
                    "at": loc["at"].clone(), "content": loc["content"].clone(), "context": loc["context"].clone()})
         })
         .collect();
@@ -3434,6 +3786,226 @@ fn tool_call_hierarchy(srv: &Server, a: &Value) -> Result<Value, String> {
               "call_site_count": call_site_total, "incoming": callers}))
 }
 
+// ---- #12/#13: contexto por símbolo (symbol_bundle) e mapa simbólico do repo (repo_map) ----------
+// Estimativa barata de tokens (~4 chars/token) para o corte por orçamento. Não é tokenizer real —
+// é um teto conservador suficiente para manter o contexto enxuto.
+fn approx_tokens(s: &str) -> usize {
+    s.chars().count() / 4 + 1
+}
+
+// #13 — symbol_bundle: pacote auto-contido de UM símbolo sob orçamento de tokens: assinatura +
+// (opcional) corpo + callers + callees. Produtiza a skill context-pack-by-symbol como tool.
+fn tool_symbol_bundle(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"]
+        .as_str()
+        .ok_or("faltou 'file' (p/ localizar o símbolo)")?;
+    let name_path = a["symbol"]
+        .as_str()
+        .or_else(|| a["name"].as_str())
+        .ok_or("faltou 'symbol' (nome ou name_path)")?;
+    let line = a["line"].as_u64();
+    let max_tokens = a["max_tokens"].as_u64().unwrap_or(4000) as usize;
+    let include_source = a["include_source"].as_bool().unwrap_or(false);
+    let client = srv.client(project, nav_backend(file))?;
+    let abs = safe_abs(project, file)?;
+    client.ensure_open(&abs)?;
+    let (l, c) = resolve_pos(&client, &abs, name_path, line)?;
+    let range = find_decl_range(&client, &abs, name_path, l)?;
+    let txt = std::fs::read_to_string(&abs).unwrap_or_default();
+    let lines: Vec<&str> = txt.split('\n').collect();
+    let (sl, _) = range.0;
+    let (el, _) = range.1;
+    let signature = lines
+        .get(sl as usize)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let body_full = {
+        let end = (el as usize).min(lines.len().saturating_sub(1));
+        lines
+            .get(sl as usize..=end)
+            .map(|s| s.join("\n"))
+            .unwrap_or_default()
+    };
+    // call hierarchy: callers (incoming) + callees (outgoing)
+    let uri = path_to_uri(&abs);
+    let prep = client.request(
+        "textDocument/prepareCallHierarchy",
+        json!({"textDocument":{"uri":uri},"position":{"line":l,"character":c}}),
+        10_000,
+    )?;
+    let root = client.root().to_string();
+    let item = prep.as_array().and_then(|a| a.first()).cloned();
+    let (mut callers, mut callees): (Vec<Value>, Vec<Value>) = (vec![], vec![]);
+    if let Some(item) = item {
+        let map_calls = |arr: Value, key: &str| -> Vec<Value> {
+            arr.as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .take(20)
+                .map(|call| {
+                    let n = &call[key];
+                    let (nl, _) = sym_pos(n);
+                    json!({"name": n["name"].as_str().unwrap_or(""),
+                           "at": format!("{}:{}", rel(&root, n["uri"].as_str().unwrap_or("")), nl + 1)})
+                })
+                .collect()
+        };
+        if let Ok(inc) = client.request(
+            "callHierarchy/incomingCalls",
+            json!({"item": item.clone()}),
+            10_000,
+        ) {
+            callers = map_calls(inc, "from");
+        }
+        if let Ok(outg) =
+            client.request("callHierarchy/outgoingCalls", json!({"item": item}), 10_000)
+        {
+            callees = map_calls(outg, "to");
+        }
+    }
+    // Orçamento: assinatura SEMPRE; corpo (se include_source) só se couber; callers/callees listados.
+    let mut est = approx_tokens(&signature)
+        + callers
+            .iter()
+            .chain(callees.iter())
+            .map(|_| 6)
+            .sum::<usize>();
+    let fit_body = include_source && est + approx_tokens(&body_full) <= max_tokens;
+    if fit_body {
+        est += approx_tokens(&body_full);
+    }
+    let truncated = include_source && !fit_body;
+    Ok(json!({
+        "symbol": name_path,
+        "file": rel(&root, &uri),
+        "at": format!("{}:{}", file, sl + 1),
+        "signature": signature,
+        "body": if fit_body { json!(body_full) } else { Value::Null },
+        "callers": callers,
+        "callees": callees,
+        "token_estimate": est,
+        "max_tokens": max_tokens,
+        "truncated": truncated,
+        "note": "contexto por símbolo sob orçamento (def/assinatura + callers + callees). include_source inlina o corpo se couber. Os TIPOS da assinatura aparecem no texto; resolver a def de cada tipo é follow-up (#13)."
+    }))
+}
+
+// #12 — repo_map: mapa SIMBÓLICO rankeado do repositório sob orçamento, via o grafo do LSP (sem
+// embeddings). Ranking HEURÍSTICO (peso por kind + export/public + boost de focus); PageRank completo
+// sobre o grafo de referências é follow-up (registrado no #12 e no retorno).
+fn tool_repo_map(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let max_tokens = a["max_tokens"].as_u64().unwrap_or(8000) as usize;
+    let focus = a["focus"].as_str().map(|s| s.to_string());
+    let lang = a["lang"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| detect_langs(project).first().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if lang.is_empty() {
+        return Err("não detectei linguagem no projeto; informe 'lang'".into());
+    }
+    let mut files: Vec<String> = vec![];
+    for ext in lang_exts(&lang) {
+        files.extend(find_source_files(project, ext, 40));
+    }
+    files.sort();
+    files.dedup();
+    files.truncate(40);
+    let client = srv.client(project, env_backend(&lang))?;
+    // (score, file, name, kind_label, signature)
+    let mut entries: Vec<(f64, String, String, &'static str, String)> = vec![];
+    for rel_file in &files {
+        let abs = format!("{}/{}", project.trim_end_matches('/'), rel_file);
+        if client.ensure_open(&abs).is_err() {
+            continue;
+        }
+        let Ok(syms) = document_symbols(&client, &abs) else {
+            continue;
+        };
+        let ftxt = std::fs::read_to_string(&abs).unwrap_or_default();
+        let flines: Vec<&str> = ftxt.split('\n').collect();
+        // só declarações referenciáveis de topo: Class(5) Method(6) Enum(10) Interface(11)
+        // Function(12) Struct(23).
+        let mut flat: Vec<(String, u64, u64, u64)> = vec![];
+        flatten_symbols(&syms, "", &mut flat);
+        for (fp, k, l, _c) in &flat {
+            if !matches!(k, 5 | 6 | 10 | 11 | 12 | 23) {
+                continue;
+            }
+            let name = fp.clone();
+            let sig = flines
+                .get(*l as usize)
+                .map(|x| x.trim().to_string())
+                .unwrap_or_else(|| name.clone());
+            let klabel = kind_label_for_line(*k, &sig);
+            let mut score = match k {
+                5 | 11 => 3.0, // Class/Interface
+                10 | 12 | 23 => 2.0,
+                _ => 1.0,
+            };
+            if sig.starts_with("export")
+                || sig.contains("pub ")
+                || sig.starts_with("pub ")
+                || sig.contains("public ")
+            {
+                score += 1.0;
+            }
+            entries.push((score, rel_file.clone(), name, klabel, sig));
+        }
+    }
+    // Boost de focus (barato, sem LSP extra): focus pode ser um ARQUIVO ou um NOME de símbolo.
+    if let Some(fo) = &focus {
+        let focus_file = entries
+            .iter()
+            .find(|e| &e.2 == fo)
+            .map(|e| e.1.clone())
+            .or_else(|| files.iter().find(|f| f.as_str() == fo).cloned());
+        for e in &mut entries {
+            if &e.2 == fo {
+                e.0 += 3.0; // é o símbolo-focus
+            }
+            if Some(&e.1) == focus_file.as_ref() {
+                e.0 += 1.0; // mesmo arquivo do focus
+            }
+        }
+    }
+    let symbols_total = entries.len();
+    entries.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+    let mut out: Vec<Value> = vec![];
+    let mut est = 0usize;
+    let mut truncated = false;
+    for (score, f, name, klabel, sig) in &entries {
+        let t = approx_tokens(sig) + approx_tokens(f) + 4;
+        if est + t > max_tokens {
+            truncated = true;
+            break;
+        }
+        est += t;
+        out.push(
+            json!({"file": f, "name": name, "kind": klabel, "signature": sig, "score": score}),
+        );
+    }
+    Ok(json!({
+        "lang": lang,
+        "files_scanned": files.len(),
+        "symbols_total": symbols_total,
+        "symbols": out,
+        "token_estimate": est,
+        "max_tokens": max_tokens,
+        "truncated": truncated,
+        "focus": focus,
+        "ranking": "heurístico (peso por kind + export/public + boost de focus). Varre até 40 arquivos (prioriza src/lib). PageRank sobre o grafo de referências é follow-up (#12)."
+    }))
+}
+
 // Fase 5: roda o build/check da linguagem NO DISCO e reporta erros (pega o que a simulação
 // em memória não vê — ex.: erros de `cargo check` no Rust). Standalone: chame após um apply.
 fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
@@ -3444,7 +4016,14 @@ fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
         .or_else(|| a["file"].as_str().map(|f| build_lang(f).to_string()))
         .ok_or("faltou 'lang' ou 'file'")?;
     let (ok, errors) = build_check(project, &lang)?;
-    Ok(json!({"lang": lang, "build_ok": ok, "errors": errors}))
+    Ok(json!({"lang": lang, "build_ok": ok, "errors": errors,
+    // Issue #11 — limite explícito do verificador (build é proxy do intento).
+    "verifier": {
+        "dimension": "build (no disco)",
+        "scope": "roda o build/check real da linguagem (<LANG>_CHECK_CMD)",
+        "limits": "pass/fail do build NÃO confirma a INTENÇÃO da mudança nem executa a suíte de testes; fail pode ser flaky/ambiente",
+        "confidence": "proxy do intento — pass não garante correto; fail não garante errado"
+    }}))
 }
 
 // ---- doctor: verifica/corrige o setup do LSP por linguagem no projeto ----
@@ -3743,6 +4322,122 @@ fn doctor_smoke(srv: &Server, project: &str, lang: &str) -> Value {
 // + config de workspace correta (senão as referências saem incompletas — ver docs/LANGUAGE-SETUP.md).
 // Com smoke=true, roda também um find_references REAL end-to-end por linguagem (pega o que os checks
 // estáticos não pegam — P2 do relatório pachamama).
+// B: acha tsconfig.json por PACOTE (monorepo) — walk raso pulando node_modules/.git/dist/target.
+// Usado pelo doctor p/ não cravar "sem tsconfig" num monorepo válido com config por pacote.
+fn find_tsconfigs(root: &Path, max_depth: usize) -> Vec<String> {
+    fn walk(dir: &Path, depth: usize, root: &Path, out: &mut Vec<String>) {
+        if depth == 0 || out.len() >= 50 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if matches!(
+                    name.as_ref(),
+                    "node_modules" | ".git" | "dist" | "build" | "target" | ".next" | "out"
+                ) {
+                    continue;
+                }
+                walk(&path, depth - 1, root, out);
+            } else if e.file_name() == "tsconfig.json" && path.parent() != Some(root) {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(root, max_depth, root, &mut out);
+    out
+}
+
+// backend LSP e extensões por linguagem (espelha Server::client / find_source_files).
+fn env_backend(lang: &str) -> &'static str {
+    match lang {
+        "python" => "basedpyright",
+        "rust" => "rust-analyzer",
+        "dart" => "dart",
+        "csharp" => "csharp-ls",
+        _ => "tsgo",
+    }
+}
+fn lang_exts(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "python" => &["py"],
+        "rust" => &["rs"],
+        "dart" => &["dart"],
+        "csharp" => &["cs"],
+        _ => &["ts", "tsx"], // TS: inclui .tsx (monorepo React)
+    }
+}
+// Sonda DIRETA de resolução de AMBIENTE (todas as linguagens). Abre arquivos-fonte reais e procura
+// erros de ASSINATURA DE CONFIG (ver is_config_signature_error). Devolve Some(evidências) quando o
+// ambiente está degradado; None quando resolve limpo (ou não deu p/ concluir). Substitui o "adivinha
+// por presença de arquivo de config" — é o sinal DIRETO em que o agent pode confiar. Teto de espera
+// curto p/ não travar o doctor; abre todos os arquivos e faz UMA janela de poll (PUSH: rust/dart/py).
+fn env_resolution_probe(srv: &Server, project: &str, lang: &str) -> Option<Vec<String>> {
+    let mut files = vec![];
+    for ext in lang_exts(lang) {
+        files.extend(find_source_files(project, ext, 6));
+    }
+    if files.is_empty() {
+        return None;
+    }
+    let client = srv.client(project, env_backend(lang)).ok()?;
+    let pull = client.supports_pull();
+    let pairs: Vec<(String, String)> = files
+        .iter()
+        .map(|rel| {
+            (
+                rel.clone(),
+                format!("{}/{}", project.trim_end_matches('/'), rel),
+            )
+        })
+        .collect();
+    for (_, abs) in &pairs {
+        let _ = client.ensure_open(abs);
+    }
+    let budget_ms: u128 = if pull { 0 } else { 8000 };
+    let start = Instant::now();
+    loop {
+        for (rel, abs) in &pairs {
+            let diags = if pull {
+                client.pull_diagnostics(abs).unwrap_or_default()
+            } else {
+                client.pushed_diagnostics(abs)
+            };
+            let mut ev = vec![];
+            for d in &diags {
+                if is_config_signature_error(lang, d) {
+                    let line = d["range"]["start"]["line"].as_u64().unwrap_or(0) + 1;
+                    let msg: String = d["message"]
+                        .as_str()
+                        .unwrap_or("")
+                        .replace('\n', " ")
+                        .chars()
+                        .take(100)
+                        .collect();
+                    ev.push(format!("{rel}:{line}: {msg}"));
+                }
+            }
+            if !ev.is_empty() {
+                ev.truncate(3);
+                return Some(ev);
+            }
+        }
+        if pull || start.elapsed().as_millis() >= budget_ms {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    None
+}
+
 fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let fix = a["fix"].as_bool().unwrap_or(false);
@@ -3773,6 +4468,10 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         let mut issue = Value::Null;
         let mut fix_desc = Value::Null;
         let mut applied = Value::Null;
+        // Sonda de resolução de AMBIENTE (todas as linguagens) — detecta ambiente degradado abrindo
+        // um arquivo real, em vez de adivinhar por presença de arquivo de config. Preenchida após o
+        // match (checks por linguagem). Null quando não se aplica.
+        let mut env_resolution = Value::Null;
 
         match *lang {
             "python" => {
@@ -3840,10 +4539,30 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
                 }
             }
             "typescript" => {
-                if !p.join("tsconfig.json").exists() {
+                // Monorepo-aware: a RAIZ pode legitimamente NÃO ter tsconfig.json (pnpm/npm
+                // workspaces + project references por pacote). Só é falha dura quando NÃO há tsconfig
+                // em lugar nenhum. Caso monorepo-sem-raiz → WARN (não bloqueia) + sonda de tipos.
+                let has_root = p.join("tsconfig.json").exists();
+                let root_blob =
+                    std::fs::read_to_string(p.join("tsconfig.json")).unwrap_or_default();
+                let has_references = root_blob.contains("\"references\"");
+                let pkg_tsconfigs = find_tsconfigs(p, 3);
+                if !has_root && pkg_tsconfigs.is_empty() {
                     cfg_ok = false;
-                    issue = json!("sem tsconfig.json");
-                    fix_desc = json!("crie um tsconfig.json (monorepo: use project references)");
+                    issue = json!("nenhum tsconfig.json (nem na raiz, nem por pacote)");
+                    fix_desc = json!("crie um tsconfig.json (monorepo: project references + tsconfig por pacote)");
+                } else if !has_root && !pkg_tsconfigs.is_empty() {
+                    issue = json!(format!(
+                        "monorepo SEM tsconfig.json na raiz ({} por pacote). Válido, mas o tsgo lançado na raiz pode cair em inferred-project e não resolver @types/aliases → risco de net_delta com falso-positivo. Ver env_resolution.",
+                        pkg_tsconfigs.len()
+                    ));
+                } else if has_root
+                    && has_references
+                    && !root_blob.contains("\"files\"")
+                    && !root_blob.contains("\"include\"")
+                {
+                    // tsconfig "solução" (só references): também não compila arquivos por si só.
+                    issue = json!("tsconfig.json raiz é só 'references' (solução) — sem files/include. Resolução de tipos vem do tsconfig de cada pacote; ver env_resolution.");
                 }
             }
             "csharp" => {
@@ -3856,6 +4575,20 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
             _ => {}
         }
 
+        // Sonda DIRETA de resolução de ambiente (TODAS as linguagens): abre arquivo real e detecta
+        // ambiente degradado via is_config_signature_error. Só quando server+config ok (senão o
+        // resultado seria óbvio/ruidoso). Degradado → objeto auto-explicativo (reliability_degraded).
+        if available && cfg_ok {
+            env_resolution = match env_resolution_probe(srv, project, lang) {
+                Some(evidence) => {
+                    let mut o = reliability_degraded(lang, evidence);
+                    o["ok"] = json!(false);
+                    o
+                }
+                None => json!({"ok": true}),
+            };
+        }
+
         // P2: só roda o smoke se binário+config estiverem ok (senão o resultado seria óbvio).
         let smoke_res = if smoke && available && cfg_ok {
             doctor_smoke(srv, project, lang)
@@ -3865,11 +4598,16 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
             Value::Null
         };
 
+        // fix acionável p/ agents: comandos + doc da tabela única env_fix_hint (alinhado ao campo
+        // `reliability` das edit-tools). Presente mesmo quando ok — é a referência de setup.
+        let (_, _, _, fix_commands, doc) = env_fix_hint(lang);
         report.push(json!({
             "lang": lang, "server": server, "server_bin": server_bin,
             "server_available": available,
             "install": if available { Value::Null } else { json!(install_hint) },
-            "workspace_config": {"ok": cfg_ok, "issue": issue, "fix": fix_desc, "applied": applied},
+            "workspace_config": {"ok": cfg_ok, "issue": issue, "fix": fix_desc, "applied": applied,
+                "fix_commands": fix_commands, "doc": doc},
+            "env_resolution": env_resolution,
             "smoke": smoke_res,
         }));
     }
@@ -3905,6 +4643,18 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
             warnings.push(json!({"lang": e["lang"].clone(), "kind": "ref_count_baixa",
                 "detail": e["smoke"]["ref_probe"]["hint"].clone()}));
         }
+        // Ambiente degradado (qualquer linguagem: monorepo TS sem tsconfig resolvido, Python sem
+        // venv, Dart sem pub get, Rust com deps não indexadas) — WARN soft, mas é exatamente o caso
+        // em que o net_delta vira type-check NÃO-confiável. Objeto auto-explicativo completo.
+        if e["env_resolution"].is_object() && !e["env_resolution"]["ok"].as_bool().unwrap_or(true) {
+            warnings.push(
+                json!({"lang": e["lang"].clone(), "kind": "env_resolution_degradada",
+                "cause": e["env_resolution"]["cause"].clone(),
+                "impact": e["env_resolution"]["impact"].clone(),
+                "evidence": e["env_resolution"]["evidence"].clone(),
+                "fix": e["env_resolution"]["fix"].clone()}),
+            );
+        }
     }
     let hint = if problems == 0 && smoke {
         "nenhum problema encontrado (inclui smoke test end-to-end)"
@@ -3938,7 +4688,7 @@ fn tool_instructions() -> Result<Value, String> {
 }
 
 fn tools_schema() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "find_references",
             "description": "Encontra TODAS as referências semânticas a um símbolo (via o language server da linguagem detectada: tsgo p/ TS, basedpyright p/ Python, rust-analyzer, csharp-ls, dart). Aguarda o índice estabilizar (gate de warmup) e sinaliza se o resultado ainda não é confiável. Use isto em vez de grep para rename/delete.",
@@ -4187,7 +4937,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "simulate_edit",
-            "description": "Simula uma edição PROPOSTA por VOCÊ em memória (net_delta) SEM tocar o disco e retorna o veredito safe/unsafe + os erros introduzidos e resolvidos (errors_introduced/errors_resolved). É o MESMO motor que rename/extract/move/safe_delete usam para decidir. Informe a edição de UMA das formas: 'new_content' (o conteúdo COMPLETO proposto do arquivo), 'edits' (lista de {start_line,end_line 1-indexed, start_col,end_col 0-indexed opcionais, new_text}) ou 'edit' (um WorkspaceEdit LSP cru). Use ANTES de aplicar para saber se a mudança quebra o build.",
+            "description": "Simula uma edição PROPOSTA por VOCÊ em memória (net_delta) SEM tocar o disco e retorna o veredito safe/unsafe + os erros introduzidos e resolvidos (errors_introduced/errors_resolved). É o MESMO motor que rename/extract/move/safe_delete usam para decidir. Informe a edição de UMA das formas: 'new_content' (o conteúdo COMPLETO proposto do arquivo), 'edits' (lista de {start_line,end_line 1-indexed, start_col,end_col 0-indexed opcionais, new_text}) ou 'edit' (um WorkspaceEdit LSP cru). Use ANTES de aplicar para saber se a mudança quebra o build. Devolve também 'type_check_reliable' (bool) para TODAS as linguagens: quando o language server não resolve o ambiente (monorepo TS sem @types; Python sem venv; Rust com deps não indexadas; Dart sem pub get), vem false + objeto 'reliability' {cause, impact, fix:{commands,doc}, evidence} — o veredito de TIPO não é confiável e esses erros de ambiente são EXCLUÍDOS do net_delta; confie em validate_build/CI (rode 'doctor' p/ o diagnóstico acionável).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -4218,7 +4968,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "safe_apply",
-            "description": "Aplica uma edição PROPOSTA por VOCÊ no disco SÓ SE net_delta<=0 (não introduz erros novos); caso contrário RECUSA e devolve os erros introduzidos SEM tocar o disco. Mesmo motor (simular→gate→apply) das demais tools de edição. Com verify_build=true roda o build da linguagem após aplicar e REVERTE se falhar (pega erros que o net_delta em memória não vê, ex.: cargo check). Mesma representação de edição do simulate_edit ('new_content' | 'edits' | 'edit').",
+            "description": "Aplica uma edição PROPOSTA por VOCÊ no disco SÓ SE net_delta<=0 (não introduz erros novos); caso contrário RECUSA e devolve os erros introduzidos SEM tocar o disco. Mesmo motor (simular→gate→apply) das demais tools de edição. Com verify_build=true roda o build da linguagem após aplicar e REVERTE se falhar (pega erros que o net_delta em memória não vê, ex.: cargo check). Mesma representação de edição do simulate_edit ('new_content' | 'edits' | 'edit'). Também devolve 'type_check_reliable' + objeto 'reliability' (ver simulate_edit): quando o ambiente do projeto não está resolvido (qualquer linguagem), o veredito de tipo não é confiável.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -4234,7 +4984,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "doctor",
-            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python: além de 'sem config', pega config presente mas SEM include/venv). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Com smoke=true, roda um find_references REAL end-to-end (gate de warmup) e, como SONDA DE CONTAGEM, alerta (warning soft, não bloqueio) se um símbolo referenciável retorna 0-1 ref estável num projeto multi-arquivo — assinatura do bug pachamama (5 vs 61 refs). Veja o campo 'warnings' na resposta. Rode uma vez ao abrir um projeto novo.",
+            "description": "Verifica o setup do projeto por linguagem: language server disponível + config de workspace correta (senão find_references sai incompleto EM SILÊNCIO — crítico em Python: além de 'sem config', pega config presente mas SEM include/venv). Com fix=true, corrige o que dá (ex.: cria pyrightconfig.json). Com smoke=true, roda um find_references REAL end-to-end (gate de warmup) e, como SONDA DE CONTAGEM, alerta (warning soft, não bloqueio) se um símbolo referenciável retorna 0-1 ref estável num projeto multi-arquivo — assinatura do bug pachamama (5 vs 61 refs). Em TypeScript é consciente de MONOREPO (pnpm/npm workspaces + tsconfig por pacote NÃO contam como 'sem tsconfig' — vira WARN, não bloqueio). Para TODAS as linguagens devolve 'env_resolution' (abre um arquivo real e detecta ambiente degradado via o language server — process sem @types/node no TS, import sem venv no Python, deps não indexadas no Rust, sem pub get no Dart → net_delta não é type-check confiável; aparece como 'env_resolution_degradada' em warnings, com cause/impact/fix.commands acionáveis). O 'workspace_config' traz 'fix_commands'+'doc'. Veja o campo 'warnings'. Rode uma vez ao abrir um projeto novo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -4266,8 +5016,64 @@ fn tools_schema() -> Value {
                 "properties": {},
                 "required": []
             }
+        },
+        {
+            "name": "symbol_bundle",
+            "description": "Contexto por SÍMBOLO sob orçamento de tokens (issue #13): devolve assinatura + (opcional) corpo + callers (call_hierarchy incoming) + callees (outgoing) de um símbolo, cortado a max_tokens. Carregue contexto por símbolo em vez de ler o arquivo inteiro. 'symbol' aceita name_path ('Classe/metodo'). Via LSP (preciso); use o daemon p/ índice quente.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string", "description": "arquivo onde o símbolo é declarado (p/ resolvê-lo)"},
+                    "symbol": {"type": "string", "description": "nome ou name_path ('Classe/metodo')"},
+                    "line": {"type": "integer", "description": "opcional: 1-indexed p/ desambiguar homônimos"},
+                    "max_tokens": {"type": "integer", "description": "orçamento (default 4000)"},
+                    "include_source": {"type": "boolean", "description": "inlina o corpo completo se couber no orçamento (default false)"}
+                },
+                "required": ["project", "file", "symbol"]
+            }
+        },
+        {
+            "name": "repo_map",
+            "description": "Mapa SIMBÓLICO rankeado do repositório sob orçamento (issue #12), via o grafo do language server — SEM embeddings. Orienta o agente rápido: lista os símbolos mais importantes (classes/funções/tipos exportados) com assinatura, rankeados, cortado a max_tokens. 'focus' (arquivo ou nome de símbolo) enviesa o ranking p/ a vizinhança relevante. Ranking heurístico (kind + export/public + focus); varre até 40 arquivos (prioriza src/lib).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "lang": {"type": "string", "description": "opcional: typescript|python|rust|dart|csharp (senão detecta)"},
+                    "max_tokens": {"type": "integer", "description": "orçamento (default 8000)"},
+                    "focus": {"type": "string", "description": "opcional: arquivo ou nome de símbolo p/ enviesar o ranking"}
+                },
+                "required": ["project"]
+            }
         }
-    ])
+    ]);
+    // Issue #10 — tool annotations (MCP). Marca as tools de NAVEGAÇÃO/leitura com readOnlyHint:true
+    // (não mutam o disco). As edit-tools ficam sem o hint (default: podem escrever). preview_edit/
+    // simulate_edit são read-only (medem e revertem); doctor/blast_radius/instructions também.
+    const READ_ONLY: &[&str] = &[
+        "find_references",
+        "document_symbols",
+        "find_symbol",
+        "workspace_symbols",
+        "call_hierarchy",
+        "symbol_bundle",
+        "repo_map",
+        "blast_radius",
+        "doctor",
+        "preview_edit",
+        "simulate_edit",
+        "instructions",
+    ];
+    if let Some(arr) = tools.as_array_mut() {
+        for t in arr {
+            if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
+                if READ_ONLY.contains(&name) {
+                    t["annotations"] = json!({"readOnlyHint": true});
+                }
+            }
+        }
+    }
+    tools
 }
 
 fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
@@ -4278,6 +5084,8 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         "find_symbol" => tool_find_symbol(srv, args),
         "workspace_symbols" => tool_workspace_symbols(srv, args),
         "call_hierarchy" => tool_call_hierarchy(srv, args),
+        "symbol_bundle" => tool_symbol_bundle(srv, args),
+        "repo_map" => tool_repo_map(srv, args),
         "extract_function" => tool_extract_function(srv, args),
         "move_symbol" => tool_move_symbol(srv, args),
         "organize_imports" => tool_organize_imports(srv, args),
@@ -4298,8 +5106,20 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
     match res {
-        Ok(v) => {
-            json!({"content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}]})
+        Ok(mut v) => {
+            // #15: rótulo semântico leve da edição (edit-tools) a partir do nome da op + blast_radius.
+            if let Some(sum) = operation_summary(name, &v) {
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("operation_summary".into(), json!(sum));
+                }
+            }
+            // MCP 2025-11-25: devolvemos o JSON também em `structuredContent` (consumo determinístico
+            // por agents) mantendo a MESMA carga serializada em TextContent (backwards-compat com
+            // clientes que só leem `content[].text`). Issue #10.
+            json!({
+                "content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}],
+                "structuredContent": v
+            })
         }
         Err(e) => {
             log_event("tool_error", name, args, &e); // descobre erros de campo (log local)
@@ -4338,8 +5158,32 @@ fn sock_path() -> String {
     })
 }
 
+// N4 (issue #4) — DESACOPLA o daemon do proxy via double-fork + setsid, reparentando-o ao init
+// (PID 1). Assim, quando o daemon morre, QUEM o reapa é o init — não importa qual proxy o subiu
+// (resolve o zombie cross-proxy: o proxy B não era pai do daemon do proxy A). Chamado no TOPO de
+// run_daemon, ainda SINGLE-THREADED (fork em processo multi-thread é inseguro) e antes de qualquer
+// I/O. Sequência clássica: fork→parent sai (proxy reapa o launcher) → setsid → fork→parent sai
+// (garante não-líder de sessão, sem TTY controlador) → neto = daemon real, órfão do init.
+#[cfg(unix)]
+fn daemonize() {
+    unsafe {
+        match libc::fork() {
+            n if n < 0 => return, // fork falhou: segue in-process (comportamento antigo, sem crash)
+            0 => {}               // filho (intermediário): continua
+            _ => libc::_exit(0),  // launcher (filho direto do proxy) sai → proxy o reapa
+        }
+        libc::setsid(); // nova sessão, solta o TTY controlador
+        match libc::fork() {
+            n if n < 0 => {}
+            0 => {}              // neto: o daemon real
+            _ => libc::_exit(0), // intermediário sai → neto fica órfão (init), não-líder de sessão
+        }
+    }
+}
+
 #[cfg(unix)]
 fn run_daemon() {
+    daemonize();
     let srv = Arc::new(build_server());
     let path = sock_path();
     let _ = std::fs::remove_file(&path);
@@ -4397,28 +5241,21 @@ fn handle_daemon_conn(stream: std::os::unix::net::UnixStream, srv: &Server) {
     }
 }
 
-// Handle do daemon que ESTE processo subiu — mantido para reap (evita zumbi <defunct> quando ele
-// morre: o proxy é o pai, então precisa dar wait() no filho morto).
-#[cfg(unix)]
-static DAEMON_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
-
-// Reap do daemon anterior (se morto) e sobe um novo, guardando o handle para reap futuro.
+// Sobe o daemon. O processo lançado é um LAUNCHER que faz double-fork+setsid (daemonize) e sai na
+// hora; o daemon real vira órfão do init. Damos wait() no launcher aqui mesmo → ele já saiu, então
+// reapa instantâneo e NÃO fica <defunct>. Como o daemon não é mais nosso filho, não há zombie cross-
+// proxy (N4): quem o reapa quando morre é o init. (Sem mais DAEMON_CHILD: nada a rastrear.)
 #[cfg(unix)]
 fn spawn_daemon() {
-    let mut guard = DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(mut old) = guard.take() {
-        let _ = old.kill(); // idempotente se já morto
-        let _ = old.wait(); // reap → sem processo <defunct>
-    }
     if let Ok(exe) = std::env::current_exe() {
-        if let Ok(child) = std::process::Command::new(exe)
+        if let Ok(mut launcher) = std::process::Command::new(exe)
             .arg("--daemon")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
         {
-            *guard = Some(child);
+            let _ = launcher.wait(); // reapa o launcher (sai logo após o double-fork)
         }
     }
 }
@@ -4459,7 +5296,8 @@ fn try_forward(path: &str, name: &str, args: &Value) -> Result<Value, String> {
 }
 
 // no MCP: encaminha um tools/call ao daemon (sobe se necessário) com FAILOVER — se a conexão
-// quebrar (daemon morto no meio), respawna (reapando o zumbi) e tenta MAIS UMA vez antes de errar.
+// quebrar (daemon morto no meio), respawna (daemon destacado via double-fork, reapado pelo init) e
+// tenta MAIS UMA vez antes de errar.
 #[cfg(unix)]
 fn forward_call(name: &str, args: &Value) -> Value {
     let path = sock_path();
@@ -5194,15 +6032,172 @@ mod tests {
         assert!(v["note"].as_str().unwrap().contains("excerto"));
     }
 
-    // G1: a superfície é de 23 tools (22 anteriores + `instructions`), todas com nome+schema.
+    // Classificador de AMBIENTE DEGRADADO por linguagem (tabela verificada via LSP real p/
+    // TS/Python/Rust/Dart; C# documentado). Guard determinístico contra regressão da tabela.
     #[test]
-    fn tools_schema_has_23_tools_incl_instructions() {
+    fn config_signature_classifier_per_language() {
+        let num = |c: i64| serde_json::json!({"severity": 1, "code": c, "message": "x"});
+        let s = |c: &str| serde_json::json!({"severity": 1, "code": c, "message": "x"});
+
+        // TS: codes de ambiente classificam true; 2322 (tipo incompatível) é erro REAL → false.
+        for c in [2580, 2591, 2318, 2688, 6053] {
+            assert!(
+                is_config_signature_error("typescript", &num(c)),
+                "TS{c} = assinatura de config"
+            );
+        }
+        assert!(
+            !is_config_signature_error("typescript", &num(2322)),
+            "TS2322 é erro real"
+        );
+
+        // Python: imports não-resolvidos true; reportUndefinedVariable (erro real) false.
+        for c in ["reportMissingImports", "reportMissingModuleSource"] {
+            assert!(is_config_signature_error("python", &s(c)));
+        }
+        assert!(!is_config_signature_error(
+            "python",
+            &s("reportUndefinedVariable")
+        ));
+
+        // Rust: crate externo não-resolvido true; E0583 (mod file faltando) e E0308 (tipo) = real.
+        for c in [
+            "E0432",
+            "E0463",
+            "unresolved-import",
+            "unresolved-extern-crate",
+        ] {
+            assert!(is_config_signature_error("rust", &s(c)));
+        }
+        assert!(!is_config_signature_error("rust", &s("E0583")));
+        assert!(!is_config_signature_error("rust", &s("E0308")));
+
+        // Dart: URI inexistente true; identifier indefinido (erro real) false.
+        assert!(is_config_signature_error("dart", &s("uri_does_not_exist")));
+        assert!(!is_config_signature_error(
+            "dart",
+            &s("undefined_identifier")
+        ));
+
+        // C#: tipo/namespace não encontrado true (doc); conversão inválida (erro real) false.
+        assert!(is_config_signature_error("csharp", &s("CS0246")));
+        assert!(!is_config_signature_error("csharp", &s("CS0029")));
+
+        // Linguagem desconhecida nunca classifica; codes não cruzam de linguagem.
+        assert!(!is_config_signature_error("go", &s("whatever")));
+        assert!(!is_config_signature_error("typescript", &s("E0432")));
+        assert!(!is_config_signature_error("rust", &num(2580)));
+    }
+
+    // O fix por linguagem é ACIONÁVEL (comandos + doc) — contrato p/ agents autônomos.
+    #[test]
+    fn env_fix_hint_is_actionable_for_all_langs() {
+        for lang in ["typescript", "python", "rust", "dart", "csharp"] {
+            let (cause, impact, summary, commands, doc) = env_fix_hint(lang);
+            assert!(
+                !cause.is_empty() && !impact.is_empty() && !summary.is_empty(),
+                "{lang}"
+            );
+            assert!(
+                !commands.is_empty(),
+                "{lang} precisa de comandos acionáveis"
+            );
+            assert!(
+                doc.starts_with("docs/LANGUAGE-SETUP.md#"),
+                "{lang} doc com âncora"
+            );
+        }
+    }
+
+    // N5 (issue #4): rótulo de kind consistente — Dart extension/mixin (kind divergente entre
+    // document/workspace symbols) normalizado; C# record preservado; demais inalterados.
+    #[test]
+    fn kind_label_normalizes_dart_extension_and_mixin() {
+        assert_eq!(
+            kind_label_for_line(3, "extension MyExt on Foo {"),
+            "Extension"
+        ); // Namespace(3)
+        assert_eq!(
+            kind_label_for_line(5, "extension MyExt on Foo {"),
+            "Extension"
+        ); // Class(5)
+        assert_eq!(kind_label_for_line(3, "  mixin Walks {"), "Mixin");
+        assert_eq!(kind_label_for_line(5, "mixin Walks {"), "Mixin");
+        // C# record preservado; class comum e método inalterados; não casa "extends".
+        assert_eq!(
+            kind_label_for_line(5, "public sealed record Cpf(string V)"),
+            "Record"
+        );
+        assert_eq!(kind_label_for_line(5, "class Foo extends Bar {"), "Class");
+        assert_eq!(kind_label_for_line(6, "void render() {}"), "Method");
+    }
+
+    // N6 (issue #4): detecção de arquivos GERADOS por codegen (edição descartável).
+    #[test]
+    fn is_generated_file_flags_codegen_outputs() {
+        for f in [
+            "lib/model/rest_response.g.dart",
+            "lib/x.freezed.dart",
+            "src/types.d.ts",
+            "proto/service_pb2.py",
+            "Models.designer.cs",
+            "api.pb.go",
+        ] {
+            assert!(is_generated_file(f), "{f} deveria ser gerado");
+        }
+        for f in [
+            "lib/model/rest_response.dart",
+            "src/main.ts",
+            "models.py",
+            "Handler.cs",
+        ] {
+            assert!(!is_generated_file(f), "{f} NÃO é gerado");
+        }
+    }
+
+    // Issue #10: tools read-only levam annotations.readOnlyHint=true; edit-tools NÃO.
+    #[test]
+    fn tools_schema_annotates_read_only_tools() {
+        let schema = tools_schema();
+        let arr = schema.as_array().expect("array");
+        let get = |n: &str| arr.iter().find(|t| t["name"] == n).expect("tool existe");
+        for ro in [
+            "find_references",
+            "document_symbols",
+            "call_hierarchy",
+            "blast_radius",
+            "doctor",
+            "simulate_edit",
+            "preview_edit",
+        ] {
+            assert_eq!(
+                get(ro)["annotations"]["readOnlyHint"],
+                serde_json::json!(true),
+                "{ro} read-only"
+            );
+        }
+        for edit in [
+            "rename_symbol",
+            "extract_function",
+            "move_symbol",
+            "safe_apply",
+            "safe_delete",
+        ] {
+            assert!(
+                get(edit).get("annotations").is_none(),
+                "{edit} NÃO deve ter readOnlyHint"
+            );
+        }
+    }
+
+    // G1: superfície de 25 tools (23 + symbol_bundle #13 + repo_map #12), todas com nome+schema.
+    #[test]
+    fn tools_schema_has_all_tools_incl_instructions() {
         let schema = tools_schema();
         let arr = schema.as_array().expect("schema é array");
-        assert_eq!(arr.len(), 23, "23 tools no total (22 + instructions)");
-        assert!(
-            arr.iter().any(|t| t["name"] == "instructions"),
-            "a tool `instructions` está no schema"
-        );
+        assert_eq!(arr.len(), 25, "25 tools (23 + symbol_bundle + repo_map)");
+        for n in ["instructions", "symbol_bundle", "repo_map"] {
+            assert!(arr.iter().any(|t| t["name"] == n), "tool `{n}` no schema");
+        }
     }
 }

@@ -14,7 +14,7 @@
   <a href="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml"><img src="https://github.com/CenturyBoys/ide_cc/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/CenturyBoys/ide_cc/releases"><img src="https://img.shields.io/github/v/release/CenturyBoys/ide_cc?sort=semver" alt="Release"></a>
   <img src="https://img.shields.io/badge/linguagens-5-blue" alt="5 linguagens">
-  <img src="https://img.shields.io/badge/ferramentas-23-blueviolet" alt="23 ferramentas">
+  <img src="https://img.shields.io/badge/ferramentas-25-blueviolet" alt="25 ferramentas">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT"></a>
 </p>
 

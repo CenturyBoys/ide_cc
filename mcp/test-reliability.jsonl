@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"doctor","arguments":{"project":"/home/ximit/Projects/ide_cc/mcp/e2e/fixtures/ts-monorepo-degraded"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"simulate_edit","arguments":{"project":"/home/ximit/Projects/ide_cc/mcp/e2e/fixtures/ts-monorepo-degraded","file":"packages/config/src/index.ts","edits":[{"start_line":2,"end_line":2,"new_text":"export function greet(n: string): string { return \"hello \" + n; }"}]}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"simulate_edit","arguments":{"project":"/home/ximit/Projects/ide_cc/mcp/e2e/fixtures/ts-monorepo-degraded","file":"packages/config/src/pure.ts","edits":[{"start_line":1,"end_line":1,"new_text":"export function add(a: number, b: number): number { return b + a; }"}]}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"doctor","arguments":{"project":"/home/ximit/Projects/ide_cc/mcp/e2e/fixtures/python-degraded"}}}

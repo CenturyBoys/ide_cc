@@ -124,3 +124,27 @@ adversariais** (`mcp/e2e/cases.json`; 5 language servers reais no CI) + modo `--
 > blast_radius, quick_fix, change_signature[+cold], move_file[+revert], instructions) e +25 testes
 > unitários. Verificação e2e completa nas **5 linguagens** (TS/Python/Rust/Dart/C#) — C# validado
 > localmente com `dotnet` SDK 10 + `csharp-ls` 0.28.
+
+## 4. Camada de REPO REAL (OSS famoso pinado) — escala e o bug silencioso
+
+Fixtures sintéticos pegam a lógica; **só código real, em escala, pega sub-contagem silenciosa**
+(a classe pachamama: `find_references` devolve `stable:true` com contagem incompleta). Por isso:
+
+- `benchmarks/scripts/setup-real-fixtures.sh` baixa 1 OSS famoso **pinado** por linguagem em
+  `fixtures/real/<lang>` (GITIGNORED) e roda o pré-requisito (npm / venv+pip / cargo / pub get /
+  dotnet restore). SHAs em `fixtures/real/VERSIONS.txt` (reprodutibilidade).
+- `mcp/e2e/cases-real-fixtures.json` (via `CODE_INTEL_E2E_CASES=…`) asserta **símbolos-oráculo**
+  (contagem estável no tag pinado), cross-checada com o `verification.grep` que o próprio resultado
+  traz (#14).
+
+**O que esta camada JÁ revelou** (prova de valor): no `requests` (Python), o `doctor` acusou
+`env_resolution.ok=false` porque 2 imports **opcionais** (`chardet`/`cryptography`) não estavam no
+venv — e o `find_references` devolvia `stable:true` com `possibly_incomplete:false`. Ou seja, o
+`doctor` via o ambiente degradado mas a tool de refs **não propagava o sinal** — exatamente o furo
+do P1/pachamama que o §1 teme. **Correção aplicada:** `find_references`/`blast_radius` agora ligam
+`possibly_incomplete` também quando `file_env_degraded` (não só no índice frio). Guard: caso e2e
+determinístico em `python-degraded` + a própria camada de repo real.
+
+**Custo honesto:** Python/Dart passam out-of-the-box; **TS (zod)** e **Rust (ripgrep)** têm
+cold-start que estoura o budget da sessão local → ficam `xfail` no catálogo (rodam com
+`CODE_INTEL_DAEMON=1` quente ou CI com mais recursos); **C#** pula sem `dotnet`/`csharp-ls`.
