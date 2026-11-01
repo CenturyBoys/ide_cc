@@ -1089,8 +1089,10 @@ fn collect_errors(client: &LspClient, files: &[String], min_gen: u64) -> BTreeSe
 // tipo como NÃO-CONFIÁVEL. Tabela verificada empiricamente (TS/Python/Dart/Rust via LSP real); C#
 // por documentação (ver plano / docs/LANGUAGE-SETUP.md). ~Nunca disparam num projeto bem configurado.
 fn diag_code(d: &Value) -> Option<i64> {
-    d.get("code")
-        .and_then(|c| c.as_i64().or_else(|| c.as_str().and_then(|s| s.parse().ok())))
+    d.get("code").and_then(|c| {
+        c.as_i64()
+            .or_else(|| c.as_str().and_then(|s| s.parse().ok()))
+    })
 }
 fn diag_code_str(d: &Value) -> Option<&str> {
     d.get("code").and_then(|c| c.as_str())
@@ -1838,11 +1840,13 @@ fn operation_summary(tool: &str, v: &Value) -> Option<String> {
     if let Some(d) = v.get("net_delta").and_then(|n| n.as_i64()) {
         s.push_str(&format!(", net_delta {d}"));
     }
-    s.push_str(if v.get("applied").and_then(|x| x.as_bool()).unwrap_or(false) {
-        " — APLICADO"
-    } else {
-        " — preview (não aplicado)"
-    });
+    s.push_str(
+        if v.get("applied").and_then(|x| x.as_bool()).unwrap_or(false) {
+            " — APLICADO"
+        } else {
+            " — preview (não aplicado)"
+        },
+    );
     Some(s)
 }
 
@@ -1945,7 +1949,7 @@ fn is_generated_file(path: &str) -> bool {
         ".g.cs",
         ".designer.cs",
         ".generated.cs", // C#
-        ".pb.go", // Go protobuf
+        ".pb.go",        // Go protobuf
     ];
     SUFFIXES.iter().any(|s| p.ends_with(s))
 }
@@ -3793,7 +3797,9 @@ fn approx_tokens(s: &str) -> usize {
 // (opcional) corpo + callers + callees. Produtiza a skill context-pack-by-symbol como tool.
 fn tool_symbol_bundle(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
-    let file = a["file"].as_str().ok_or("faltou 'file' (p/ localizar o símbolo)")?;
+    let file = a["file"]
+        .as_str()
+        .ok_or("faltou 'file' (p/ localizar o símbolo)")?;
     let name_path = a["symbol"]
         .as_str()
         .or_else(|| a["name"].as_str())
@@ -3846,9 +3852,11 @@ fn tool_symbol_bundle(srv: &Server, a: &Value) -> Result<Value, String> {
                 })
                 .collect()
         };
-        if let Ok(inc) =
-            client.request("callHierarchy/incomingCalls", json!({"item": item.clone()}), 10_000)
-        {
+        if let Ok(inc) = client.request(
+            "callHierarchy/incomingCalls",
+            json!({"item": item.clone()}),
+            10_000,
+        ) {
             callers = map_calls(inc, "from");
         }
         if let Ok(outg) =
@@ -3859,7 +3867,11 @@ fn tool_symbol_bundle(srv: &Server, a: &Value) -> Result<Value, String> {
     }
     // Orçamento: assinatura SEMPRE; corpo (se include_source) só se couber; callers/callees listados.
     let mut est = approx_tokens(&signature)
-        + callers.iter().chain(callees.iter()).map(|_| 6).sum::<usize>();
+        + callers
+            .iter()
+            .chain(callees.iter())
+            .map(|_| 6)
+            .sum::<usize>();
     let fit_body = include_source && est + approx_tokens(&body_full) <= max_tokens;
     if fit_body {
         est += approx_tokens(&body_full);
@@ -3977,7 +3989,9 @@ fn tool_repo_map(srv: &Server, a: &Value) -> Result<Value, String> {
             break;
         }
         est += t;
-        out.push(json!({"file": f, "name": name, "kind": klabel, "signature": sig, "score": score}));
+        out.push(
+            json!({"file": f, "name": name, "kind": klabel, "signature": sig, "score": score}),
+        );
     }
     Ok(json!({
         "lang": lang,
@@ -4003,13 +4017,13 @@ fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
         .ok_or("faltou 'lang' ou 'file'")?;
     let (ok, errors) = build_check(project, &lang)?;
     Ok(json!({"lang": lang, "build_ok": ok, "errors": errors,
-        // Issue #11 — limite explícito do verificador (build é proxy do intento).
-        "verifier": {
-            "dimension": "build (no disco)",
-            "scope": "roda o build/check real da linguagem (<LANG>_CHECK_CMD)",
-            "limits": "pass/fail do build NÃO confirma a INTENÇÃO da mudança nem executa a suíte de testes; fail pode ser flaky/ambiente",
-            "confidence": "proxy do intento — pass não garante correto; fail não garante errado"
-        }}))
+    // Issue #11 — limite explícito do verificador (build é proxy do intento).
+    "verifier": {
+        "dimension": "build (no disco)",
+        "scope": "roda o build/check real da linguagem (<LANG>_CHECK_CMD)",
+        "limits": "pass/fail do build NÃO confirma a INTENÇÃO da mudança nem executa a suíte de testes; fail pode ser flaky/ambiente",
+        "confidence": "proxy do intento — pass não garante correto; fail não garante errado"
+    }}))
 }
 
 // ---- doctor: verifica/corrige o setup do LSP por linguagem no projeto ----
@@ -4542,7 +4556,9 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
                         "monorepo SEM tsconfig.json na raiz ({} por pacote). Válido, mas o tsgo lançado na raiz pode cair em inferred-project e não resolver @types/aliases → risco de net_delta com falso-positivo. Ver env_resolution.",
                         pkg_tsconfigs.len()
                     ));
-                } else if has_root && has_references && !root_blob.contains("\"files\"")
+                } else if has_root
+                    && has_references
+                    && !root_blob.contains("\"files\"")
                     && !root_blob.contains("\"include\"")
                 {
                     // tsconfig "solução" (só references): também não compila arquivos por si só.
@@ -4630,14 +4646,14 @@ fn tool_doctor(srv: &Server, a: &Value) -> Result<Value, String> {
         // Ambiente degradado (qualquer linguagem: monorepo TS sem tsconfig resolvido, Python sem
         // venv, Dart sem pub get, Rust com deps não indexadas) — WARN soft, mas é exatamente o caso
         // em que o net_delta vira type-check NÃO-confiável. Objeto auto-explicativo completo.
-        if e["env_resolution"].is_object()
-            && !e["env_resolution"]["ok"].as_bool().unwrap_or(true)
-        {
-            warnings.push(json!({"lang": e["lang"].clone(), "kind": "env_resolution_degradada",
+        if e["env_resolution"].is_object() && !e["env_resolution"]["ok"].as_bool().unwrap_or(true) {
+            warnings.push(
+                json!({"lang": e["lang"].clone(), "kind": "env_resolution_degradada",
                 "cause": e["env_resolution"]["cause"].clone(),
                 "impact": e["env_resolution"]["impact"].clone(),
                 "evidence": e["env_resolution"]["evidence"].clone(),
-                "fix": e["env_resolution"]["fix"].clone()}));
+                "fix": e["env_resolution"]["fix"].clone()}),
+            );
         }
     }
     let hint = if problems == 0 && smoke {
@@ -6025,18 +6041,32 @@ mod tests {
 
         // TS: codes de ambiente classificam true; 2322 (tipo incompatível) é erro REAL → false.
         for c in [2580, 2591, 2318, 2688, 6053] {
-            assert!(is_config_signature_error("typescript", &num(c)), "TS{c} = assinatura de config");
+            assert!(
+                is_config_signature_error("typescript", &num(c)),
+                "TS{c} = assinatura de config"
+            );
         }
-        assert!(!is_config_signature_error("typescript", &num(2322)), "TS2322 é erro real");
+        assert!(
+            !is_config_signature_error("typescript", &num(2322)),
+            "TS2322 é erro real"
+        );
 
         // Python: imports não-resolvidos true; reportUndefinedVariable (erro real) false.
         for c in ["reportMissingImports", "reportMissingModuleSource"] {
             assert!(is_config_signature_error("python", &s(c)));
         }
-        assert!(!is_config_signature_error("python", &s("reportUndefinedVariable")));
+        assert!(!is_config_signature_error(
+            "python",
+            &s("reportUndefinedVariable")
+        ));
 
         // Rust: crate externo não-resolvido true; E0583 (mod file faltando) e E0308 (tipo) = real.
-        for c in ["E0432", "E0463", "unresolved-import", "unresolved-extern-crate"] {
+        for c in [
+            "E0432",
+            "E0463",
+            "unresolved-import",
+            "unresolved-extern-crate",
+        ] {
             assert!(is_config_signature_error("rust", &s(c)));
         }
         assert!(!is_config_signature_error("rust", &s("E0583")));
@@ -6044,7 +6074,10 @@ mod tests {
 
         // Dart: URI inexistente true; identifier indefinido (erro real) false.
         assert!(is_config_signature_error("dart", &s("uri_does_not_exist")));
-        assert!(!is_config_signature_error("dart", &s("undefined_identifier")));
+        assert!(!is_config_signature_error(
+            "dart",
+            &s("undefined_identifier")
+        ));
 
         // C#: tipo/namespace não encontrado true (doc); conversão inválida (erro real) false.
         assert!(is_config_signature_error("csharp", &s("CS0246")));
@@ -6061,9 +6094,18 @@ mod tests {
     fn env_fix_hint_is_actionable_for_all_langs() {
         for lang in ["typescript", "python", "rust", "dart", "csharp"] {
             let (cause, impact, summary, commands, doc) = env_fix_hint(lang);
-            assert!(!cause.is_empty() && !impact.is_empty() && !summary.is_empty(), "{lang}");
-            assert!(!commands.is_empty(), "{lang} precisa de comandos acionáveis");
-            assert!(doc.starts_with("docs/LANGUAGE-SETUP.md#"), "{lang} doc com âncora");
+            assert!(
+                !cause.is_empty() && !impact.is_empty() && !summary.is_empty(),
+                "{lang}"
+            );
+            assert!(
+                !commands.is_empty(),
+                "{lang} precisa de comandos acionáveis"
+            );
+            assert!(
+                doc.starts_with("docs/LANGUAGE-SETUP.md#"),
+                "{lang} doc com âncora"
+            );
         }
     }
 
@@ -6071,12 +6113,21 @@ mod tests {
     // document/workspace symbols) normalizado; C# record preservado; demais inalterados.
     #[test]
     fn kind_label_normalizes_dart_extension_and_mixin() {
-        assert_eq!(kind_label_for_line(3, "extension MyExt on Foo {"), "Extension"); // Namespace(3)
-        assert_eq!(kind_label_for_line(5, "extension MyExt on Foo {"), "Extension"); // Class(5)
+        assert_eq!(
+            kind_label_for_line(3, "extension MyExt on Foo {"),
+            "Extension"
+        ); // Namespace(3)
+        assert_eq!(
+            kind_label_for_line(5, "extension MyExt on Foo {"),
+            "Extension"
+        ); // Class(5)
         assert_eq!(kind_label_for_line(3, "  mixin Walks {"), "Mixin");
         assert_eq!(kind_label_for_line(5, "mixin Walks {"), "Mixin");
         // C# record preservado; class comum e método inalterados; não casa "extends".
-        assert_eq!(kind_label_for_line(5, "public sealed record Cpf(string V)"), "Record");
+        assert_eq!(
+            kind_label_for_line(5, "public sealed record Cpf(string V)"),
+            "Record"
+        );
         assert_eq!(kind_label_for_line(5, "class Foo extends Bar {"), "Class");
         assert_eq!(kind_label_for_line(6, "void render() {}"), "Method");
     }
@@ -6094,7 +6145,12 @@ mod tests {
         ] {
             assert!(is_generated_file(f), "{f} deveria ser gerado");
         }
-        for f in ["lib/model/rest_response.dart", "src/main.ts", "models.py", "Handler.cs"] {
+        for f in [
+            "lib/model/rest_response.dart",
+            "src/main.ts",
+            "models.py",
+            "Handler.cs",
+        ] {
             assert!(!is_generated_file(f), "{f} NÃO é gerado");
         }
     }
@@ -6105,11 +6161,32 @@ mod tests {
         let schema = tools_schema();
         let arr = schema.as_array().expect("array");
         let get = |n: &str| arr.iter().find(|t| t["name"] == n).expect("tool existe");
-        for ro in ["find_references", "document_symbols", "call_hierarchy", "blast_radius", "doctor", "simulate_edit", "preview_edit"] {
-            assert_eq!(get(ro)["annotations"]["readOnlyHint"], serde_json::json!(true), "{ro} read-only");
+        for ro in [
+            "find_references",
+            "document_symbols",
+            "call_hierarchy",
+            "blast_radius",
+            "doctor",
+            "simulate_edit",
+            "preview_edit",
+        ] {
+            assert_eq!(
+                get(ro)["annotations"]["readOnlyHint"],
+                serde_json::json!(true),
+                "{ro} read-only"
+            );
         }
-        for edit in ["rename_symbol", "extract_function", "move_symbol", "safe_apply", "safe_delete"] {
-            assert!(get(edit).get("annotations").is_none(), "{edit} NÃO deve ter readOnlyHint");
+        for edit in [
+            "rename_symbol",
+            "extract_function",
+            "move_symbol",
+            "safe_apply",
+            "safe_delete",
+        ] {
+            assert!(
+                get(edit).get("annotations").is_none(),
+                "{edit} NÃO deve ter readOnlyHint"
+            );
         }
     }
 
