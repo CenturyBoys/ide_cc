@@ -1,0 +1,5 @@
+{
+  "name": "mono-degraded",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
