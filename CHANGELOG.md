@@ -6,6 +6,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-01
+
+> Lote "agent-tooling" (pesquisa #9 → issues #10–#16 + varredura #1–#5). Superfície de tools
+> **23 → 25**. `cargo test` 47 verde; e2e multi-linguagem verde; +fixtures de repo real pinado.
+
 ### Fixed
 - **Varredura das issues #1–#5 — itens DEFERIDOS da #4 agora resolvidos** (os P1–P14 e N1–N3 já
   haviam sido corrigidos em v0.7.0–v0.7.4; restavam 3 nits adiados):
@@ -509,7 +514,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...v0.8.0
