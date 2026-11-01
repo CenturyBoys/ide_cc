@@ -29,6 +29,17 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
     `mcp/e2e/fixtures/dart/lib/ext.dart`.
 
 ### Added
+- **MCP `structuredContent` + tool annotations (issue #10):** toda tool devolve o JSON também no
+  campo `structuredContent` (spec MCP 2025-11-25) — consumo determinístico por agents autônomos —
+  mantendo a MESMA carga em `content[].text` (backwards-compat). Tools de leitura
+  (`find_references`, `document_symbols`, `find_symbol`, `workspace_symbols`, `call_hierarchy`,
+  `blast_radius`, `doctor`, `preview_edit`, `simulate_edit`, `instructions`) marcadas com
+  `annotations.readOnlyHint:true`; edit-tools sem o hint. Teste unit + run real.
+- **Limite explícito do verificador (issue #11):** `net_delta`/`verify_and_apply` e `validate_build`
+  passam a devolver um campo `verifier` `{dimension, scope, limits, confidence}` — todo verificador é
+  PROXY do intento (sofre falso-positivo E falso-negativo; "pass não garante correto; fail não garante
+  errado"), e dizemos o que o gate cobre e o que NÃO cobre (ex.: net_delta em memória não vê
+  `cargo check`). Estende a camada de honestidade. Asserções e2e (TS rename, Python validate_build).
 - **Confiabilidade de ambiente MULTI-LINGUAGEM — honestidade do net_delta + saída auto-explicativa
   para agents autônomos.** Quando o language server não resolve o ambiente do projeto, o `net_delta`
   (veredito de segurança) e o `find_references` podiam sair errados **em silêncio**. Agora o servidor

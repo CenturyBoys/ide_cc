@@ -94,10 +94,10 @@
         "assert": [{"path": "count", "op": "==", "value": 0}, {"path": "warning", "op": "present"}]
       },
       {
-        "name": "ADVERSARIAL P13: validate_build num projeto Python LIMPO é build_ok:true (não lê '0 errors' como erro)",
+        "name": "ADVERSARIAL P13: validate_build num projeto Python LIMPO é build_ok:true (não lê '0 errors' como erro) + verifier (#11)",
         "tool": "validate_build",
         "args": {"lang": "python"},
-        "assert": [{"path": "build_ok", "op": "==", "value": true}]
+        "assert": [{"path": "build_ok", "op": "==", "value": true}, {"path": "verifier.dimension", "op": "present"}]
       }
     ]
   },
@@ -118,10 +118,10 @@
         "assert": [{"path": "count", "op": ">", "value": 0}]
       },
       {
-        "name": "rename_symbol preview seguro (net_delta 0, não toca disco)",
+        "name": "rename_symbol preview seguro (net_delta 0, não toca disco) + verifier explícito (#11)",
         "tool": "rename_symbol",
         "args": {"file": "widget.ts", "symbol": "Widget", "new_name": "WidgetX", "apply": false},
-        "assert": [{"path": "safe", "op": "==", "value": true}, {"path": "net_delta", "op": "==", "value": 0}]
+        "assert": [{"path": "safe", "op": "==", "value": true}, {"path": "net_delta", "op": "==", "value": 0}, {"path": "verifier.confidence", "op": "present"}]
       },
       {
         "name": "move_symbol cria arquivo novo (suportado em TS/vtsls)",

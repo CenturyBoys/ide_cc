@@ -1534,6 +1534,18 @@ fn verify_and_apply(
         "generated_files": generated_files,
         "build_ok": build_ok,
         "build_errors": build_errors,
+        // Issue #11 — limite explícito do verificador: todo verificador é PROXY do intento (sofre
+        // falso-positivo E falso-negativo). Dizemos ao agente o que o gate cobre e o que NÃO cobre.
+        "verifier": {
+            "dimension": if build_ok.is_null() { "type (net_delta, em memória)" } else { "type (net_delta) + build (disco)" },
+            "scope": "net_delta = diagnostics do language server em MEMÓRIA (erros de ambiente de config são excluídos)",
+            "limits": if build_ok.is_null() {
+                "NÃO vê erros que só o build externo pega (ex.: cargo check/flycheck no Rust — use verify_build:true); NÃO confirma a intenção, só ausência de erros novos"
+            } else {
+                "o build no disco cobre o que a simulação em memória não vê; ainda assim pass/fail NÃO confirma a INTENÇÃO nem executa a suíte de testes"
+            },
+            "confidence": "proxy do intento — pass não garante correto; fail não garante errado"
+        },
         "note": note,
     }))
 }
@@ -3700,7 +3712,14 @@ fn tool_validate_build(_srv: &Server, a: &Value) -> Result<Value, String> {
         .or_else(|| a["file"].as_str().map(|f| build_lang(f).to_string()))
         .ok_or("faltou 'lang' ou 'file'")?;
     let (ok, errors) = build_check(project, &lang)?;
-    Ok(json!({"lang": lang, "build_ok": ok, "errors": errors}))
+    Ok(json!({"lang": lang, "build_ok": ok, "errors": errors,
+        // Issue #11 — limite explícito do verificador (build é proxy do intento).
+        "verifier": {
+            "dimension": "build (no disco)",
+            "scope": "roda o build/check real da linguagem (<LANG>_CHECK_CMD)",
+            "limits": "pass/fail do build NÃO confirma a INTENÇÃO da mudança nem executa a suíte de testes; fail pode ser flaky/ambiente",
+            "confidence": "proxy do intento — pass não garante correto; fail não garante errado"
+        }}))
 }
 
 // ---- doctor: verifica/corrige o setup do LSP por linguagem no projeto ----
@@ -4363,7 +4382,7 @@ fn tool_instructions() -> Result<Value, String> {
 }
 
 fn tools_schema() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "find_references",
             "description": "Encontra TODAS as referências semânticas a um símbolo (via o language server da linguagem detectada: tsgo p/ TS, basedpyright p/ Python, rust-analyzer, csharp-ls, dart). Aguarda o índice estabilizar (gate de warmup) e sinaliza se o resultado ainda não é confiável. Use isto em vez de grep para rename/delete.",
@@ -4692,7 +4711,32 @@ fn tools_schema() -> Value {
                 "required": []
             }
         }
-    ])
+    ]);
+    // Issue #10 — tool annotations (MCP). Marca as tools de NAVEGAÇÃO/leitura com readOnlyHint:true
+    // (não mutam o disco). As edit-tools ficam sem o hint (default: podem escrever). preview_edit/
+    // simulate_edit são read-only (medem e revertem); doctor/blast_radius/instructions também.
+    const READ_ONLY: &[&str] = &[
+        "find_references",
+        "document_symbols",
+        "find_symbol",
+        "workspace_symbols",
+        "call_hierarchy",
+        "blast_radius",
+        "doctor",
+        "preview_edit",
+        "simulate_edit",
+        "instructions",
+    ];
+    if let Some(arr) = tools.as_array_mut() {
+        for t in arr {
+            if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
+                if READ_ONLY.contains(&name) {
+                    t["annotations"] = json!({"readOnlyHint": true});
+                }
+            }
+        }
+    }
+    tools
 }
 
 fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
@@ -4724,7 +4768,13 @@ fn call_tool(srv: &Server, name: &str, args: &Value) -> Value {
     };
     match res {
         Ok(v) => {
-            json!({"content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}]})
+            // MCP 2025-11-25: devolvemos o JSON também em `structuredContent` (consumo determinístico
+            // por agents) mantendo a MESMA carga serializada em TextContent (backwards-compat com
+            // clientes que só leem `content[].text`). Issue #10.
+            json!({
+                "content":[{"type":"text","text": serde_json::to_string_pretty(&v).unwrap()}],
+                "structuredContent": v
+            })
         }
         Err(e) => {
             log_event("tool_error", name, args, &e); // descobre erros de campo (log local)
@@ -5717,6 +5767,20 @@ mod tests {
         }
         for f in ["lib/model/rest_response.dart", "src/main.ts", "models.py", "Handler.cs"] {
             assert!(!is_generated_file(f), "{f} NÃO é gerado");
+        }
+    }
+
+    // Issue #10: tools read-only levam annotations.readOnlyHint=true; edit-tools NÃO.
+    #[test]
+    fn tools_schema_annotates_read_only_tools() {
+        let schema = tools_schema();
+        let arr = schema.as_array().expect("array");
+        let get = |n: &str| arr.iter().find(|t| t["name"] == n).expect("tool existe");
+        for ro in ["find_references", "document_symbols", "call_hierarchy", "blast_radius", "doctor", "simulate_edit", "preview_edit"] {
+            assert_eq!(get(ro)["annotations"]["readOnlyHint"], serde_json::json!(true), "{ro} read-only");
+        }
+        for edit in ["rename_symbol", "extract_function", "move_symbol", "safe_apply", "safe_delete"] {
+            assert!(get(edit).get("annotations").is_none(), "{edit} NÃO deve ter readOnlyHint");
         }
     }
 
