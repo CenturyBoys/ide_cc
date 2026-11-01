@@ -36,6 +36,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   ambiente está degradado no arquivo do símbolo** (`file_env_degraded` — imports/@types/deps
   não-resolvidos), pegando o caso pachamama (openFilesOnly) que o gate de warmup sozinho não via.
   (Melhoria descoberta ao testar em repo real — ver fixtures reais abaixo.)
+- **Eval de refactoring behavior-preserving (Camada 2 do #16):** `benchmarks/scripts/eval_refactor.py`
+  mede, no MESMO alvo, rename **semântico** (code-intel/LSP) vs **textual** (sed no fonte), com o
+  **build/análise da linguagem como oráculo** (à la RefactorPlatform; clone git pinado + revert por
+  medição). Prova em repo real (`collection`/Dart): `QueueList`→`QueueListX` semântico mantém
+  `dart analyze` limpo (atualiza `lib/` **e** `test/`), textual deixa 38 refs órfãs → 20 erros. Relatório:
+  `benchmarks/results/REFACTOR-EVAL.md`. Benchmarks externos (SWE-Refactor/ProMax/RefactorPlatform)
+  ficam como follow-up (Java/JVM + container-pesados).
 - **Fixtures de repo REAL pinado por linguagem (Camada 1 do #16):** `benchmarks/scripts/setup-real-fixtures.sh`
   baixa OSS famoso pinado em `fixtures/real/<lang>` (GITIGNORED) — **zod** (TS), **requests** (Py),
   **ripgrep** (Rust), **collection** (Dart), **Newtonsoft.Json** (C#) — roda o pré-requisito de cada
