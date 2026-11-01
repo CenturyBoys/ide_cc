@@ -1,6 +1,6 @@
 [package]
 name = "code-intel-mcp"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2021"
 description = "MCP server for semantic code operations (rename/move/extract) over real language servers — 'an IDE in the LLM's hands'"
 license = "MIT"
@@ -16,6 +16,11 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# unix-only: double-fork + setsid para DESACOPLAR o daemon do proxy (reparenta ao init → nunca vira
+# zombie de nenhum proxy; N4 cross-proxy da issue #4). Crate ubíqua, sem deps transitivas.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

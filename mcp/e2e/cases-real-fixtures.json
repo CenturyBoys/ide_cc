@@ -1,0 +1,91 @@
+[
+  {
+    "lang": "python",
+    "project": "../../fixtures/real/python",
+    "cases": [
+      {
+        "name": "REAL/requests: doctor env_resolution.ok=true (venv + deps opcionais resolvidas)",
+        "tool": "doctor",
+        "args": {},
+        "assert": [{"path": "report.0.env_resolution.ok", "op": "==", "value": true}]
+      },
+      {
+        "name": "REAL/requests: find_references(Response) estável, não-parcial (oráculo pinado v2.32.3)",
+        "tool": "find_references",
+        "args": {"file": "src/requests/models.py", "symbol": "Response", "summary": true},
+        "assert": [
+          {"path": "count", "op": ">=", "value": 3},
+          {"path": "stable", "op": "==", "value": true},
+          {"path": "verification.possibly_incomplete", "op": "==", "value": false}
+        ]
+      }
+    ]
+  },
+  {
+    "lang": "dart",
+    "project": "../../fixtures/real/dart",
+    "cases": [
+      {
+        "name": "REAL/collection: find_references(QueueList) em escala — estável, não-parcial (count~104)",
+        "tool": "find_references",
+        "args": {"file": "lib/src/queue_list.dart", "symbol": "QueueList", "summary": true},
+        "assert": [
+          {"path": "count", "op": ">=", "value": 40},
+          {"path": "stable", "op": "==", "value": true},
+          {"path": "verification.possibly_incomplete", "op": "==", "value": false}
+        ]
+      }
+    ]
+  },
+  {
+    "lang": "typescript",
+    "project": "../../fixtures/real/typescript",
+    "cases": [
+      {
+        "name": "REAL/zod: doctor env_resolution.ok=true (projeto bem configurado em escala)",
+        "tool": "doctor",
+        "args": {},
+        "assert": [{"path": "report.0.env_resolution.ok", "op": "==", "value": true}]
+      },
+      {
+        "name": "REAL/zod: find_references(ZodError) em escala (XFAIL local: cold-start do zod > budget da sessão; rode com CODE_INTEL_DAEMON=1 quente ou CI — manual: count=98 stable)",
+        "tool": "find_references",
+        "args": {"file": "src/ZodError.ts", "symbol": "ZodError", "summary": true},
+        "assert": [{"path": "count", "op": ">=", "value": 40}, {"path": "stable", "op": "==", "value": true}],
+        "xfail": true
+      },
+      {
+        "name": "REAL/zod: rename(ZodError) preview seguro em escala (XFAIL local: idem cold-start)",
+        "tool": "rename_symbol",
+        "args": {"file": "src/ZodError.ts", "symbol": "ZodError", "new_name": "ZodErrorX", "apply": false},
+        "assert": [{"path": "safe", "op": "==", "value": true}, {"path": "net_delta", "op": "==", "value": 0}],
+        "xfail": true
+      }
+    ]
+  },
+  {
+    "lang": "rust",
+    "project": "../../fixtures/real/rust",
+    "cases": [
+      {
+        "name": "REAL/ripgrep: find_references(Glob) (XFAIL local: workspace de 13 crates não indexa no budget; precisa daemon quente/CI com mais recursos)",
+        "tool": "find_references",
+        "args": {"file": "crates/globset/src/glob.rs", "symbol": "Glob", "summary": true},
+        "assert": [{"path": "count", "op": ">=", "value": 10}, {"path": "stable", "op": "==", "value": true}],
+        "xfail": true
+      }
+    ]
+  },
+  {
+    "lang": "csharp",
+    "project": "../../fixtures/real/csharp",
+    "cases": [
+      {
+        "name": "REAL/Newtonsoft.Json: find_references(JsonConvert) (PULA sem dotnet/csharp-ls; roda no CI)",
+        "tool": "find_references",
+        "args": {"file": "Src/Newtonsoft.Json/JsonConvert.cs", "symbol": "JsonConvert", "summary": true},
+        "assert": [{"path": "count", "op": ">=", "value": 1}, {"path": "stable", "op": "==", "value": true}]
+      }
+    ]
+  }
+]

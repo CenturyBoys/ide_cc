@@ -6,6 +6,106 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-01
+
+> Lote "agent-tooling" (pesquisa #9 → issues #10–#16 + varredura #1–#5). Superfície de tools
+> **23 → 25**. `cargo test` 47 verde; e2e multi-linguagem verde; +fixtures de repo real pinado.
+
+### Fixed
+- **Varredura das issues #1–#5 — itens DEFERIDOS da #4 agora resolvidos** (os P1–P14 e N1–N3 já
+  haviam sido corrigidos em v0.7.0–v0.7.4; restavam 3 nits adiados):
+  - **N4 — zombie do daemon cross-proxy.** O daemon era filho direto do proxy; se outro proxy o
+    encontrava vivo e ele morria, ninguém o reapava (→ `<defunct>`). Agora o daemon faz
+    **double-fork + `setsid`** no boot (`daemonize()`), reparentando-se ao **init (PID 1)** — quem o
+    reapa é sempre o init, independente de qual proxy o subiu. O `spawn_daemon` virou spawn+`wait()`
+    do launcher efêmero (sem mais `DAEMON_CHILD`). Verificado: 0 zombies; daemon desacoplado do proxy.
+    **Decisão registrada:** adicionada a dependência **`libc`** (unix-only, ubíqua, sem deps
+    transitivas) — `fork()`/`setsid()` não existem na std; é a forma canônica e portável.
+  - **N5 — `kind` de `extension`/`mixin` (Dart) inconsistente** entre `document_symbols` (Namespace)
+    e `workspace_symbols` (Class). Normalizado para **"Extension"/"Mixin"** nos três tools
+    (`document_symbols`/`find_symbol`/`workspace_symbols`) via `kind_label_for_line`/`kind_label_scan`
+    (o mesmo mecanismo que já relabela C# `record`→"Record"). O `workspace_symbols` varre
+    content+context porque o Dart aponta o símbolo para a linha do doc-comment.
+  - **N6 — `rename`/edições tocam arquivos GERADOS** (`*.g.dart`, `*.freezed.dart`, `*.d.ts`,
+    `*_pb2.py`, `*.designer.cs`, `*.pb.go`, …) sem avisar. Agora o resultado de toda edição traz
+    `generated_files` e marca `generated:true` por arquivo em `changes` — o agent sabe que o patch é
+    descartável e deve re-rodar o codegen.
+  - Testes: unit (`kind_label`, `is_generated_file`) + e2e Dart (extension/mixin) com fixture
+    `mcp/e2e/fixtures/dart/lib/ext.dart`.
+
+### Added
+- **Gaps enumeráveis / verificação (issue #14):** `find_references` e `blast_radius` passam a devolver
+  um campo `verification` `{grep, rationale, possibly_incomplete}` — o `grep` EXATO para o agente
+  cross-checar o `count` semântico e enumerar o que o LSP possa ter deixado de fora (operacionaliza a
+  honestidade). `possibly_incomplete` liga quando o índice está frio (`stable:false`) **OU quando o
+  ambiente está degradado no arquivo do símbolo** (`file_env_degraded` — imports/@types/deps
+  não-resolvidos), pegando o caso pachamama (openFilesOnly) que o gate de warmup sozinho não via.
+  (Melhoria descoberta ao testar em repo real — ver fixtures reais abaixo.)
+- **Eval de refactoring behavior-preserving (Camada 2 do #16):** `benchmarks/scripts/eval_refactor.py`
+  mede, no MESMO alvo, rename **semântico** (code-intel/LSP) vs **textual** (sed no fonte), com o
+  **build/análise da linguagem como oráculo** (à la RefactorPlatform; clone git pinado + revert por
+  medição). Prova em repo real (`collection`/Dart): `QueueList`→`QueueListX` semântico mantém
+  `dart analyze` limpo (atualiza `lib/` **e** `test/`), textual deixa 38 refs órfãs → 20 erros. Relatório:
+  `benchmarks/results/REFACTOR-EVAL.md`. Benchmarks externos (SWE-Refactor/ProMax/RefactorPlatform)
+  ficam como follow-up (Java/JVM + container-pesados).
+- **Fixtures de repo REAL pinado por linguagem (Camada 1 do #16):** `benchmarks/scripts/setup-real-fixtures.sh`
+  baixa OSS famoso pinado em `fixtures/real/<lang>` (GITIGNORED) — **zod** (TS), **requests** (Py),
+  **ripgrep** (Rust), **collection** (Dart), **Newtonsoft.Json** (C#) — roda o pré-requisito de cada
+  linguagem e grava os SHAs em `VERSIONS.txt`. `mcp/e2e/cases-real-fixtures.json` asserta escala/
+  correção com símbolos-oráculo (ex.: `Response`≥3, `QueueList`~104, `ZodError`=98), cross-checados
+  com o `verification.grep` (#14). `run.py` ganhou `CODE_INTEL_E2E_CASES=<arquivo>` para rodar esse
+  catálogo à parte do e2e por-PR. Python/Dart passam out-of-the-box; TS(zod)/Rust(ripgrep) são `xfail`
+  local (cold-start pesado → daemon quente/CI); C# pula sem dotnet (roda no CI).
+- **`operation_summary` (issue #15):** toda edit-tool (rename/extract/move/change_signature/
+  safe_delete/…) devolve um rótulo legível da operação ("rename: N edição(ões) em M arquivo(s),
+  net_delta Z — preview/APLICADO"), derivado do nome da op + `blast_radius`/`creates`/`net_delta`.
+  Injetado num ponto único (`call_tool`). AST-diff refactoring-aware completo fica como follow-up.
+- **`repo_map` (issue #12):** nova tool — mapa SIMBÓLICO rankeado do repositório sob orçamento de
+  tokens, via o grafo do language server (`document_symbols`), **sem embeddings**. Lista os símbolos
+  mais importantes (classes/funções/tipos) com assinatura, rankeados por heurística (kind +
+  export/public + boost de `focus`), varrendo até 40 arquivos (prioriza `src/lib`). Orienta o agente
+  rápido (time-to-correct-change). *PageRank completo sobre o grafo de refs fica como follow-up.*
+- **`symbol_bundle(name, max_tokens)` (issue #13):** nova tool — contexto por SÍMBOLO sob orçamento:
+  assinatura + (opcional) corpo + callers (`incomingCalls`) + callees (`outgoingCalls`), cortado ao
+  orçamento. Produtiza a skill `context-pack-by-symbol` como tool. Superfície de tools **23 → 25**.
+- **MCP `structuredContent` + tool annotations (issue #10):** toda tool devolve o JSON também no
+  campo `structuredContent` (spec MCP 2025-11-25) — consumo determinístico por agents autônomos —
+  mantendo a MESMA carga em `content[].text` (backwards-compat). Tools de leitura
+  (`find_references`, `document_symbols`, `find_symbol`, `workspace_symbols`, `call_hierarchy`,
+  `blast_radius`, `doctor`, `preview_edit`, `simulate_edit`, `instructions`) marcadas com
+  `annotations.readOnlyHint:true`; edit-tools sem o hint. Teste unit + run real.
+- **Limite explícito do verificador (issue #11):** `net_delta`/`verify_and_apply` e `validate_build`
+  passam a devolver um campo `verifier` `{dimension, scope, limits, confidence}` — todo verificador é
+  PROXY do intento (sofre falso-positivo E falso-negativo; "pass não garante correto; fail não garante
+  errado"), e dizemos o que o gate cobre e o que NÃO cobre (ex.: net_delta em memória não vê
+  `cargo check`). Estende a camada de honestidade. Asserções e2e (TS rename, Python validate_build).
+- **Confiabilidade de ambiente MULTI-LINGUAGEM — honestidade do net_delta + saída auto-explicativa
+  para agents autônomos.** Quando o language server não resolve o ambiente do projeto, o `net_delta`
+  (veredito de segurança) e o `find_references` podiam sair errados **em silêncio**. Agora o servidor
+  detecta e é honesto nas **5 linguagens**, e diz ao agent *o quê, por quê, impacto e como corrigir*:
+  - **Classificador de "assinatura de config" por linguagem** (`is_config_signature_error(lang, d)`):
+    erros cuja presença denuncia ambiente não-resolvido (não erro real de código). Tabela verificada
+    via LSP real: **TS** `2580/2591/2318/2688/6053`; **Python** `reportMissingImports`/
+    `reportMissingModuleSource`; **Rust** `E0432`/`E0463`/`unresolved-import`/`unresolved-extern-crate`
+    (E0583 mod-faltando fica de fora — é erro real); **Dart** `uri_does_not_exist`/
+    `uri_has_not_been_generated`; **C#** `CS0246`/`CS0234` (documentado; coberto por unit test + CI).
+  - **Sinal na própria edit-tool**: `simulate_edit`/`safe_apply`/rename/extract/move/… devolvem
+    `type_check_reliable` (bool) e, quando degradado, o objeto **`reliability`** `{verdict, lang,
+    signal, evidence, cause, impact, fix:{summary, commands, doc}}`. Os erros de ambiente são
+    **excluídos do `net_delta`** (antes, um `process`/import pré-existente recusaria edição legítima
+    em silêncio). Sinal por conjunto-de-arquivos-da-edição: edit que não toca o ambiente degradado
+    continua confiável.
+  - **doctor genérico + consciente de monorepo**: a checagem de TS deixa de cravar "sem tsconfig.json"
+    por presença de arquivo — reconhece pnpm/npm workspaces + tsconfig por pacote (`find_tsconfigs`) e
+    tsconfig "solução" (só `references`) → **WARN**, não bloqueio. Para TODAS as linguagens adiciona
+    `env_resolution: {ok, signal, evidence, cause, impact, fix}` (abre um arquivo real e detecta o
+    ambiente degradado via LSP, em vez de adivinhar) e `workspace_config.fix_commands`+`doc`
+    acionáveis. Entra em `warnings` como `env_resolution_degradada`.
+  - **Testes de produção**: unit (`cargo test`) do classificador por linguagem; e2e versionado
+    (`mcp/e2e/cases.json` + fixtures `ts-monorepo-degraded`/`python-degraded`) com casos degradados
+    **e** guardas anti-falso-positivo (projeto saudável → `env_resolution.ok=true`).
+  - Doc: `docs/LANGUAGE-SETUP.md` (todas as linguagens) descreve a assinatura e o fix com comandos.
+
 ## [0.8.2] - 2026-09-21
 
 ### Fixed
@@ -414,7 +514,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.7.7...v0.8.0

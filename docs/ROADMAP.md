@@ -34,6 +34,9 @@ mudança correta**.
 | **4. Multi-linguagem** | **TS ✅ · Python ✅ · Dart ✅ · Rust ✅ · C# ✅** | ✅ **CONCLUÍDA (5/5)** |
 | **5. Otimização** | **validação ✅ · frescor ✅ · cache entre sessões ✅** · warmup dirigido, paralelismo, telemetria, RAM | 🟡 **em curso** |
 | **6. Skills & Features** | contrato de saída · organize_imports · safe_delete · net_delta produtizado · edições por símbolo · blast_radius · quick_fix · change_signature · move_file · guidance portátil | ✅ **CONCLUÍDA (2026-09-21)** |
+| **7. Confiabilidade de ambiente** | classificador de "assinatura de config" multi-linguagem · `type_check_reliable`+`reliability` nas edit-tools · `env_resolution`+`fix_commands` no doctor · fixtures degradados + e2e (TS/Python) · guardas anti-falso-positivo | 🟢 **em curso** |
+| **7b. Varredura de issues (#1–#5)** | todas fechadas; itens DEFERIDOS da #4 implementados: **N4** (daemon double-fork/setsid → sem zombie cross-proxy; +dep `libc`) · **N5** (kind extension/mixin consistente nos 3 tools) · **N6** (`generated_files` sinalizados nas edições) | ✅ **concluída** |
+| **7c. Pesquisa #9 → issues #10–#16** | #10 structuredContent+annotations · #11 verifier · #12 repo_map · #13 symbol_bundle · #14 gaps enumeráveis · #15 operation_summary · #16 eval (Camada 1 fixtures reais pinados + Camada 2 behavior-preserving; benchmarks externos = follow-up) | ✅ **#10–#15 + #16 C1/C2** |
 
 ### Fase 4 — Python: CONCLUÍDO (2026-09-18)
 
