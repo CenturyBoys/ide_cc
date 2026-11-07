@@ -51,6 +51,10 @@ venv = ".venv"               # para resolver imports do virtualenv
     conjunto-de-arquivos-da-edição.
   - **Fix de verdade:** garanta que o tsconfig do pacote cobre o arquivo e que `@types/node` é
     resolvível; ou use `validate_build`/CI como juiz de tipos nesse repo.
+- **`validate_build` em TS não tem default** (ao contrário de Rust/Dart/C#/Python) e exige o comando
+  explícito via **`TYPESCRIPT_CHECK_CMD`** (ex.: `tsc --noEmit -p tsconfig.json`; `TS_CHECK_CMD` é
+  alias legado). É de propósito: um `tsgo --noEmit` na raiz pode cair em *inferred-project* e checar
+  nada em silêncio. Sem esse env, `validate_build` devolve erro acionável apontando o nome do var.
 
 ## 🎯 Dart (Dart Analysis Server)
 
