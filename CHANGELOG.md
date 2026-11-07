@@ -6,6 +6,25 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-07
+
+> Patch: correção da #18 — `validate_build` em TypeScript agora alcançável pelo nome de env
+> documentado (`TYPESCRIPT_CHECK_CMD`), com `TS_CHECK_CMD` como alias. `cargo test` 48 verde.
+
+### Fixed
+- **#18 — `validate_build` em TypeScript: override de check-cmd inalcançável pelo nome documentado.**
+  O código lia só o env abreviado `TS_CHECK_CMD`, mas a mensagem de erro (`lang.to_uppercase()` →
+  "defina TYPESCRIPT_CHECK_CMD") e a doc da tool (`<LANG>_CHECK_CMD`) mandavam setar
+  `TYPESCRIPT_CHECK_CMD` — que era **ignorado**. Resultado: um agente seguia o erro, setava o env
+  "certo" e o `validate_build` continuava falhando igual (a 2ª camada de segurança de edição — build
+  no disco — ficava inoperante em TS). Agora `build_cmd` lê o nome **canônico `TYPESCRIPT_CHECK_CMD`**
+  (alinhado ao erro/doc) e mantém **`TS_CHECK_CMD` como alias** retrocompatível. As outras 4
+  linguagens não sofriam (nome da linguagem = prefixo do env). Decisão: TS segue **sem default** de
+  propósito — um `tsgo --noEmit` na raiz pode cair em inferred-project e checar nada em silêncio
+  (anti-padrão do projeto); o `doctor`/`env_fix_hint` agora apontam explicitamente para o env.
+  Regressão travada por teste unitário (`build_cmd_typescript_env_names`) + e2e comparativo
+  (`mcp/e2e/repro-ts-check-cmd.sh`, plugado no CI).
+
 ## [0.9.0] - 2026-11-01
 
 > Lote "agent-tooling" (pesquisa #9 → issues #10–#16 + varredura #1–#5). Superfície de tools
@@ -514,7 +533,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.0...v0.8.1
