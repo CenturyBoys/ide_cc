@@ -67,3 +67,10 @@ jobs:
           export CODE_INTEL_E2E_TIMEOUT=300
           export CODE_INTEL_E2E_SETUP_TIMEOUT=300
           python3 mcp/e2e/run.py
+
+      # Regressão #18: validate_build + TS — override alcançável por TYPESCRIPT_CHECK_CMD (canônico)
+      # e TS_CHECK_CMD (alias legado). Pula sozinho se o tsgo não instalou.
+      - name: regressão #18 (TS validate_build env name)
+        run: |
+          export TSGO_BIN="tsgo"
+          bash mcp/e2e/repro-ts-check-cmd.sh

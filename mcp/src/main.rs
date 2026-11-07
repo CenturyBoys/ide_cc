@@ -1164,11 +1164,12 @@ fn env_fix_hint(
     match lang {
         "typescript" => (
             "o language server não resolveu o ambiente TS (tsconfig/@types) destes arquivos — ex.: monorepo pnpm sem tsconfig na raiz (tsgo cai em inferred-project) ou pacote não coberto",
-            "erros de ambiente foram EXCLUÍDOS do net_delta; o veredito de TIPO não é confiável — use validate_build (TS_CHECK_CMD) ou o CI como juiz",
-            "garanta que o tsconfig do pacote cobre o arquivo e que @types/node é resolvível",
+            "erros de ambiente foram EXCLUÍDOS do net_delta; o veredito de TIPO não é confiável — use validate_build (defina TYPESCRIPT_CHECK_CMD) ou o CI como juiz",
+            "garanta que o tsconfig do pacote cobre o arquivo e que @types/node é resolvível; p/ validate_build, exporte TYPESCRIPT_CHECK_CMD",
             vec![
                 "pnpm install",
                 "# confira o tsconfig do pacote: extends da base + include cobrindo o arquivo; @types/node instalado",
+                "# validate_build em TS NÃO tem default: exporte TYPESCRIPT_CHECK_CMD (ex.: 'tsc --noEmit -p tsconfig.json'; alias legado: TS_CHECK_CMD)",
             ],
             "docs/LANGUAGE-SETUP.md#typescript",
         ),
@@ -1272,28 +1273,36 @@ fn build_lang(file: &str) -> &'static str {
     }
 }
 
-// comando de check por linguagem (override por env <LANG>_CHECK_CMD, ex.: RUST_CHECK_CMD)
+// comando de check por linguagem (override por env <LANG>_CHECK_CMD, ex.: RUST_CHECK_CMD).
+// O 1º nome de env é o CANÔNICO (<LANG>_CHECK_CMD — igual à mensagem de erro `lang.to_uppercase()`
+// e à doc da tool); os demais são aliases retrocompatíveis.
 fn build_cmd(lang: &str) -> Option<(String, Vec<String>)> {
-    let (env_key, default): (&str, Option<(&str, Vec<&str>)>) = match lang {
+    let (env_keys, default): (&[&str], Option<(&str, Vec<&str>)>) = match lang {
         "rust" => (
-            "RUST_CHECK_CMD",
+            &["RUST_CHECK_CMD"],
             Some(("cargo", vec!["check", "--quiet", "--message-format=short"])),
         ),
-        "dart" => ("DART_CHECK_CMD", Some(("dart", vec!["analyze"]))),
+        "dart" => (&["DART_CHECK_CMD"], Some(("dart", vec!["analyze"]))),
         "csharp" => (
-            "CSHARP_CHECK_CMD",
+            &["CSHARP_CHECK_CMD"],
             Some(("dotnet", vec!["build", "--nologo", "-v", "q"])),
         ),
-        "typescript" => ("TS_CHECK_CMD", None),
+        // #18: o canônico é TYPESCRIPT_CHECK_CMD (bate com a msg de erro e a doc <LANG>_CHECK_CMD);
+        // TS_CHECK_CMD mantido como ALIAS (quem já usava não quebra). Sem default de propósito: um
+        // `tsgo --noEmit` na raiz pode cair em inferred-project e checar NADA em silêncio — o
+        // anti-padrão "incompleto em silêncio" que o projeto combate; o usuário define o comando.
+        "typescript" => (&["TYPESCRIPT_CHECK_CMD", "TS_CHECK_CMD"], None),
         // P9: default sensato pra Python (antes: no-op silencioso). basedpyright lê o disco e o
         // pyrightconfig; override via PYTHON_CHECK_CMD (ex.: "python -m py_compile ...").
-        "python" => ("PYTHON_CHECK_CMD", Some(("basedpyright", vec!["."]))),
-        _ => ("", None),
+        "python" => (&["PYTHON_CHECK_CMD"], Some(("basedpyright", vec!["."]))),
+        _ => (&[], None),
     };
-    if let Ok(s) = std::env::var(env_key) {
-        let parts: Vec<String> = s.split_whitespace().map(|x| x.to_string()).collect();
-        if !parts.is_empty() {
-            return Some((parts[0].clone(), parts[1..].to_vec()));
+    for key in env_keys {
+        if let Ok(s) = std::env::var(key) {
+            let parts: Vec<String> = s.split_whitespace().map(|x| x.to_string()).collect();
+            if !parts.is_empty() {
+                return Some((parts[0].clone(), parts[1..].to_vec()));
+            }
         }
     }
     default.map(|(c, a)| {
@@ -4997,7 +5006,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "validate_build",
-            "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Defaults: rust=cargo check, dart=dart analyze, csharp=dotnet build, python=basedpyright. Override via env <LANG>_CHECK_CMD (ex.: PYTHON_CHECK_CMD).",
+            "description": "Roda o build/check da linguagem NO DISCO e reporta erros. Fecha o buraco do net_delta em memória (ex.: erros que só o `cargo check` do Rust pega). Chame após um apply. Defaults: rust=cargo check, dart=dart analyze, csharp=dotnet build, python=basedpyright. TypeScript NÃO tem default — defina TYPESCRIPT_CHECK_CMD (ex.: 'tsc --noEmit -p tsconfig.json'). Override via env <LANG>_CHECK_CMD (ex.: PYTHON_CHECK_CMD; TS aceita TS_CHECK_CMD como alias).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -5620,6 +5629,32 @@ mod tests {
         assert!(build_cmd("rust").is_some());
         assert!(build_cmd("dart").is_some());
         assert!(build_cmd("csharp").is_some());
+    }
+
+    // #18: TypeScript não tem default, mas o override é alcançável pelo nome CANÔNICO
+    // (TYPESCRIPT_CHECK_CMD, igual à msg de erro/doc) e pelo ALIAS legado (TS_CHECK_CMD).
+    // Regressão do bug de campo: setar TYPESCRIPT_CHECK_CMD não surtia efeito (código lia só TS_CHECK_CMD).
+    #[test]
+    fn build_cmd_typescript_env_names() {
+        std::env::remove_var("TYPESCRIPT_CHECK_CMD");
+        std::env::remove_var("TS_CHECK_CMD");
+        assert!(build_cmd("typescript").is_none(), "TS não deve ter default");
+
+        std::env::set_var("TYPESCRIPT_CHECK_CMD", "tsc --noEmit");
+        assert_eq!(
+            build_cmd("typescript"),
+            Some(("tsc".to_string(), vec!["--noEmit".to_string()])),
+            "nome canônico TYPESCRIPT_CHECK_CMD deve ser lido"
+        );
+        std::env::remove_var("TYPESCRIPT_CHECK_CMD");
+
+        std::env::set_var("TS_CHECK_CMD", "tsgo --noEmit");
+        assert_eq!(
+            build_cmd("typescript"),
+            Some(("tsgo".to_string(), vec!["--noEmit".to_string()])),
+            "alias legado TS_CHECK_CMD deve continuar funcionando"
+        );
+        std::env::remove_var("TS_CHECK_CMD");
     }
 
     // P12: validação de new_name.
