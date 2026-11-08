@@ -45,10 +45,9 @@ Scopes comuns: `mcp`, `lsp`, `benchmarks`, `fixtures`, `docs`, `repo`.
 
 **Corpo** (opcional): o *porquê* e o *impacto*, não o *como*. Referencie a fase/decisão.
 
-**Trailer obrigatório** em todo commit (política do repo):
-```
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-```
+**Sem trailer de atribuição ao agente** (política do repo): commits e PRs **não** levam
+`Co-Authored-By`, `Generated with` nem qualquer atribuição a Claude/IA — a autoria é do humano que
+assina o commit. (Regra alinhada à prática real da história do repo.)
 
 Exemplo:
 ```
@@ -56,8 +55,6 @@ feat(mcp): add apply→verify with net_delta guard
 
 Simula a edição em memória (didChange), mede diagnostics antes/depois e só
 persiste se net_delta<=0. Defesa contra rename/extract/move destrutivo.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ## 3. Pull Requests
