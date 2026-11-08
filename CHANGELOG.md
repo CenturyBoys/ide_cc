@@ -6,6 +6,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-08
+
+> Fecha uma fraqueza de roteamento observada em campo: um subagente contornava a camada semântica
+> num move de diretório (`git mv` + sed nas URIs de import), se justificando com uma leitura FALSA do
+> manual. Duas frentes endurecidas — o manual (import-URI não é "texto literal") e o `move_file`
+> (guard de diretório). `cargo test` 48 verde; build limpo.
+
 ### Fixed
 - **Fraqueza de roteamento: um subagente contornava a camada semântica no move de pasta.** Observado
   num cenário Dart — após renames de símbolo 100% via code-intel (analyzer limpo), o agente moveu um
@@ -559,7 +566,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...v0.8.2
