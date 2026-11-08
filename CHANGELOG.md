@@ -6,6 +6,39 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-08
+
+> Fecha uma fraqueza de roteamento observada em campo: um subagente contornava a camada semântica
+> num move de diretório (`git mv` + sed nas URIs de import), se justificando com uma leitura FALSA do
+> manual. Duas frentes endurecidas — o manual (import-URI não é "texto literal") e o `move_file`
+> (guard de diretório). `cargo test` 48 verde; build limpo.
+
+### Fixed
+- **Fraqueza de roteamento: um subagente contornava a camada semântica no move de pasta.** Observado
+  num cenário Dart — após renames de símbolo 100% via code-intel (analyzer limpo), o agente moveu um
+  diretório com `git mv` + **sed nas URIs de import**, se justificando com *"conserto de URI de import
+  é texto literal, que o próprio manual roteia para sed"*. Averiguado na fonte: a citação é **FALSA**
+  (o manual reserva grep/sed para string/comentário/config; URI de import nunca foi "texto literal"),
+  e duas lacunas se somaram para permitir o contorno — a brecha de categoria no manual (abaixo) e o
+  `move_file` que **meio-movia um diretório em silêncio** (`fs::rename` de pasta + fixup de import de
+  URI-única deixava os importers dos N arquivos sem conserto). Ambas fechadas nesta entrada.
+
+### Changed
+- **Manual (`FULL_MANUAL` + `SHORT_INSTRUCTIONS`): fecha a brecha de categoria "import = texto
+  literal".** Nova regra explícita: um caminho/URI de import/export/require/`part`/barrel é uma
+  ARESTA do grafo de módulos (referência semântica a um arquivo), **não** texto literal →
+  reescrevê-los ao mover arquivo/pasta é `move_file` (willRenameFiles conserta TODOS os importers de
+  uma vez), **NUNCA** sed. `git mv` + sed nos imports é nomeado como o anti-padrão que casa prefixos
+  errados / mexe em `part`/strings com o path e MUITAS VEZES AINDA COMPILA (corrupção silenciosa).
+
+### Added
+- **`move_file`: guard de diretório.** `source` sendo um DIRETÓRIO → retorna
+  `unsupported`/`source_is_directory` com a receita segura (iterar e chamar `move_file` por arquivo;
+  o rename no disco é detectado pelo git como rename → histórico preservado; gerados
+  `.g.dart`/`.freezed.dart`/`.d.ts` são REGERADOS pelo codegen, não editados à mão) em vez de
+  meio-mover. O `detail` do `willrename_unsupported` também passou a barrar o fallback `git mv` + sed.
+  Descrição da tool atualizada. Teste e2e versionado: `mcp/test-move-file-dir.jsonl`.
+
 ## [0.9.1] - 2026-11-07
 
 > Patch: correção da #18 — `validate_build` em TypeScript agora alcançável pelo nome de env
@@ -533,7 +566,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.1...v0.8.2

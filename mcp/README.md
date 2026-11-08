@@ -44,7 +44,7 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 | `blast_radius` | composto | `references` + `call_hierarchy` | superfície de risco (refs + callers, particionado test vs produção) **antes** de editar; read-only |
 | `quick_fix` | code-action | `quickfix` | aplica UMA correção de diagnóstico de uma linha (executor interno, sem `code_action` cru) + apply→verify |
 | `change_signature` | hand-built / nativo | `call_hierarchy` + edit | add/remove/reordena parâmetro na declaração **e** em todos os call-sites; recusa em vez de aplicar edição parcial/perigosa |
-| `move_file` | `willRenameFiles`/tsserver | fileRename edits | move arquivo inteiro + conserta importers/re-exports; **reverte se o build quebrar** (rede anti basedpyright #1888); desambiguado de `move_symbol` |
+| `move_file` | `willRenameFiles`/tsserver | fileRename edits | move arquivo inteiro + conserta importers/re-exports; **reverte se o build quebrar** (rede anti basedpyright #1888); **por-arquivo** (diretório → `source_is_directory` com receita, nunca git mv + sed); desambiguado de `move_symbol` |
 | `instructions` | — | guidance server-side | manual de uso (roteamento grep-vs-semântico, preview→apply, blast antes de editar) — **fonte única** herdada por QUALQUER cliente MCP (Codex/Cursor/Cline/Zed), também no campo `instructions` do `initialize` |
 
 As tools de **localização** (`find_references`, `find_symbol`, `workspace_symbols`,
