@@ -178,3 +178,12 @@ skills em paralelo; CHANGELOG/ROADMAP consolidados ao final. **Superfície de to
 - Snapshot/rollback de disco antes de `apply=true`.
 - Medir RAM por backend; monorepo maior (100+ pacotes).
 - `documentSymbol` do tsgo vem achatado (name_paths hierárquicos aproximados).
+- **Move de PASTA é por-arquivo.** `move_file` opera em um arquivo (willRenameFiles = um par
+  old/new URI); hoje recusa diretório com guidance (`source_is_directory`) e manda iterar por arquivo.
+  Falta uma operação nativa de mover pasta que coordene os N arquivos + o par library/`part` + os
+  gerados (`.g.dart`/`.freezed.dart`) de uma vez. Contexto: um subagente contornou a camada via
+  `git mv` + sed nas URIs de import (corrupção silenciosa) — manual e guard endurecidos (ver CHANGELOG
+  `[Unreleased]`); a operação de pasta de primeira classe continua pendente.
+- **`move_file` em Dart não-exercitado.** Depende do dart LSP responder `workspace/willRenameFiles`;
+  sem teste e2e (só TS/vtsls é coberto). Validar e, se o backend não responder, o caminho honesto é
+  `willrename_unsupported` (nunca git mv + sed).
