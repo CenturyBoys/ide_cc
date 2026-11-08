@@ -1,0 +1,8 @@
+# F8 move_file — GUARD DE DIRETÓRIO: move_file opera em UM arquivo (o fixup de importers via
+# willRenameFiles é por-arquivo). Mover uma PASTA com fs::rename deixaria os N imports sem conserto.
+# id2: source="src" (um DIRETÓRIO) → unsupported, error:"source_is_directory", applied:false.
+#      O detail manda iterar por arquivo e PROÍBE git mv + sed nas URIs de import.
+# Pré-req: bash benchmarks/scripts/setup-fixtures.sh (cria fixtures/move-file-ts). Não muta nada.
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"move_file","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/move-file-ts","source":"src","dest":"lib"}}}

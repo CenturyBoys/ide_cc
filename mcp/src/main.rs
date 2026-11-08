@@ -61,6 +61,12 @@ Você decide O QUÊ; a tool faz a operação mecânica; o validador CONFERE (net
   assinatura), use as tools do code-intel — NÃO grep/sed. Grep textual corrompe strings, comentários
   e homônimos, e muitas vezes AINDA compila (bug silencioso).
 - Reserve grep/Grep para TEXTO LITERAL: uma string, um trecho de comentário, uma chave de config.
+- CAMINHO DE MÓDULO NÃO É "texto literal". Uma URI/path de import/export/require/`part`/barrel é
+  uma ARESTA do grafo de módulos (referência semântica a um arquivo), não uma string qualquer.
+  Reescrevê-los ao mover um arquivo/pasta é trabalho de `move_file` (willRenameFiles conserta TODOS
+  os importers de uma vez), NUNCA de sed. `git mv` + sed nos imports é o anti-padrão clássico: casa
+  prefixos errados, mexe em `part`/strings que contêm o path, e MUITAS VEZES AINDA COMPILA
+  (corrupção silenciosa — exatamente o que esta camada existe para impedir).
 - find_symbol / document_symbols resolvem "método dentro de classe" por name_path ('Classe/metodo')
   — não chute linha por texto.
 
@@ -111,6 +117,7 @@ Você decide O QUÊ; a tool faz a operação mecânica; o validador CONFERE (net
     // são as regras de ouro. Chame a tool `instructions` para o manual completo.
     pub const SHORT_INSTRUCTIONS: &str = r#"code-intel: operações SEMÂNTICAS de código com edição VERIFICADA (você decide o quê; a tool confere via net_delta/build). Regras de ouro:
 - SÍMBOLOS (achar/contar refs/renomear/mover/extrair/deletar/mudar assinatura) → use as tools do code-intel, NUNCA grep/sed (grep corrompe strings/comentários/homônimos). Grep só para TEXTO LITERAL.
+- Caminho de import/export/require/part/URI de módulo NÃO é "texto literal" → mover arquivo/pasta é move_file (conserta os importers), NUNCA git mv + sed nas URIs (corrompe imports em silêncio e ainda compila).
 - Confie no resultado: as tools passam por um gate de warmup e devolvem ERRO (não contagem parcial) se o índice aquece. find_references estável (stable:true) → NÃO releia arquivos só para conferir.
 - Edite com preview: as edit-tools têm apply=false por default (uma chamada já é preview). Antes de um apply arriscado, use simulate_edit (net_delta) e safe_apply (só aplica se net_delta<=0). Em Rust, verify_build:true (aplica só se o build passar; senão reverte).
 - Antes de uma edição AMPLA, rode blast_radius (refs+callers, test vs. produção). Para apagar, use safe_delete (recusa se houver uso), nunca delete às cegas.
@@ -3363,6 +3370,17 @@ fn tool_move_file(srv: &Server, a: &Value) -> Result<Value, String> {
     if !Path::new(&src_abs).exists() {
         return Err(format!("source não existe: {source}"));
     }
+    // Guard de DIRETÓRIO: move_file opera em UM arquivo (o fixup de importers via willRenameFiles é
+    // por-arquivo, com UM par old/new URI). Um `fs::rename` de pasta deixaria os imports dos N
+    // arquivos sem conserto → importers quebrados. Recusamos honestamente (unsupported) com a receita
+    // segura, em vez de meio-mover em silêncio — e barramos o anti-padrão git mv + sed nas URIs.
+    if Path::new(&src_abs).is_dir() {
+        return Ok(json!({
+            "operation": "move_file", "source": source, "dest": dest,
+            "applied": false, "safe": false, "unsupported": true, "error": "source_is_directory",
+            "detail": "move_file opera em UM arquivo (o conserto dos importers é por-arquivo). Para mover uma PASTA, itere os arquivos e chame move_file em CADA um — ele faz o rename no disco (git detecta como rename: histórico preservado) E conserta os importers via o language server. NUNCA use git mv + sed nas URIs de import (corrompe em silêncio e ainda compila). Arquivos gerados (.g.dart/.freezed.dart/.d.ts) acompanham o fonte e são REGERADOS pelo codegen — mova o fonte e rode o codegen, não edite o gerado à mão.",
+        }));
+    }
     if Path::new(&dest_abs).exists() {
         return Ok(json!({
             "operation": "move_file", "source": source, "dest": dest,
@@ -3413,7 +3431,7 @@ fn tool_move_file(srv: &Server, a: &Value) -> Result<Value, String> {
                 return Ok(json!({
                     "operation": "move_file", "source": source, "dest": dest,
                     "applied": false, "safe": false, "unsupported": true, "error": "willrename_unsupported",
-                    "detail": format!("o backend '{}' não respondeu workspace/willRenameFiles — não é seguro mover sem consertar os importers. Suportado hoje em TypeScript (vtsls).", backend),
+                    "detail": format!("o backend '{}' não respondeu workspace/willRenameFiles — não é seguro mover sem consertar os importers. Suportado hoje em TypeScript (vtsls). NÃO caia para git mv + sed nas URIs de import (corrompe em silêncio e ainda compila): se não há conserto semântico dos imports, não mova.", backend),
                 }));
             }
         }
@@ -4931,7 +4949,7 @@ fn tools_schema() -> Value {
         },
         {
             "name": "move_file",
-            "description": "Move/renomeia um ARQUIVO INTEIRO para um novo caminho e conserta TODOS os importers/re-exports/barrels que apontavam para ele (via workspace/willRenameFiles do language server). DIFERE de move_symbol: move_symbol tira UM símbolo de um arquivo e o põe em outro; move_file move o arquivo todo + o fixup de imports. apply=false (default) = preview (NÃO move; só mede os edits de import em memória e lista os importers); apply=true move no disco e aplica os edits via net_delta, com verify_build opcional. basedpyright tem bug conhecido aqui (#1888: willRenameFiles ignora o diretório) → use verify_build=true: se o move quebrar o build, o move é REVERTIDO (arquivo volta ao lugar). Se o backend não implementar willRenameFiles, retorna unsupported (não move às cegas). Confiável hoje em TypeScript (vtsls).",
+            "description": "Move/renomeia um ARQUIVO INTEIRO para um novo caminho e conserta TODOS os importers/re-exports/barrels que apontavam para ele (via workspace/willRenameFiles do language server). DIFERE de move_symbol: move_symbol tira UM símbolo de um arquivo e o põe em outro; move_file move o arquivo todo + o fixup de imports. apply=false (default) = preview (NÃO move; só mede os edits de import em memória e lista os importers); apply=true move no disco e aplica os edits via net_delta, com verify_build opcional. basedpyright tem bug conhecido aqui (#1888: willRenameFiles ignora o diretório) → use verify_build=true: se o move quebrar o build, o move é REVERTIDO (arquivo volta ao lugar). Se o backend não implementar willRenameFiles, retorna unsupported (não move às cegas). Opera em UM arquivo: se 'source' for um DIRETÓRIO, retorna unsupported/source_is_directory (para mover uma pasta, itere e chame por arquivo) — nunca conserte URIs de import com sed. Confiável hoje em TypeScript (vtsls).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
