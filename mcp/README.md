@@ -29,7 +29,7 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 |---|---|---|---|
 | `find_references` | tsgo | `textDocument/references` | referências semânticas + gate de warmup |
 | `rename_symbol` | tsgo | `rename` + diagnostics | rename com apply→verify (`net_delta`) |
-| `document_symbols` | tsgo | `documentSymbol` | árvore de símbolos (classes → métodos) |
+| `document_symbols` | tsgo | `documentSymbol` | árvore de símbolos (classes → métodos) + `span_lines`; modo métrica (`include_content:false`/`top_level_only`/`kinds`) p/ ranking de "god function" |
 | `find_symbol` | tsgo | `documentSymbol` | acha símbolo por name_path, posição exata |
 | `workspace_symbols` | tsgo | `workspace/symbol` | busca símbolo no projeto inteiro |
 | `call_hierarchy` | tsgo | `prepareCallHierarchy`+`incomingCalls` | quem chama este símbolo |

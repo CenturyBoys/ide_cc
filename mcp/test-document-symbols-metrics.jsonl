@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"document_symbols","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/mono-ts","file":"packages/core/src/index.ts"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"document_symbols","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/mono-ts","file":"packages/core/src/index.ts","include_content":false,"top_level_only":true}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"document_symbols","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/mono-ts","file":"packages/core/src/index.ts","include_content":false,"kinds":["Function"]}}}
