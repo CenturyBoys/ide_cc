@@ -6,6 +6,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-17
+
+> Duas capacidades novas na camada, ambas verificadas (cargo test 51 verde; CI build+lint e e2e dos
+> 5 language servers verdes). (1) `document_symbols` ganha **modo métrica** (`span_lines` + filtros)
+> para medir "god function" barato, determinístico e parser-correto, sem estourar tokens. (2)
+> `move_symbol` passa a **suportar Rust** montando o WorkspaceEdit à mão (o rust-analyzer não
+> implementa move-to-file) — recorte + arquivo novo + registro de módulo + re-export —, com o
+> `cargo check` como gate autoritativo (reverte se quebrar).
+
 ### Added
 - **`document_symbols`: modo métrica (span + filtros).** Cada símbolo agora traz `span_lines` — o
   tamanho da declaração em linhas, derivado do range COMPLETO (via `flatten_ranges`/`sym_full_range`,
@@ -593,7 +602,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0
