@@ -6,6 +6,42 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-17
+
+> Duas capacidades novas na camada, ambas verificadas (cargo test 51 verde; CI build+lint e e2e dos
+> 5 language servers verdes). (1) `document_symbols` ganha **modo métrica** (`span_lines` + filtros)
+> para medir "god function" barato, determinístico e parser-correto, sem estourar tokens. (2)
+> `move_symbol` passa a **suportar Rust** montando o WorkspaceEdit à mão (o rust-analyzer não
+> implementa move-to-file) — recorte + arquivo novo + registro de módulo + re-export —, com o
+> `cargo check` como gate autoritativo (reverte se quebrar).
+
+### Added
+- **`document_symbols`: modo métrica (span + filtros).** Cada símbolo agora traz `span_lines` — o
+  tamanho da declaração em linhas, derivado do range COMPLETO (via `flatten_ranges`/`sym_full_range`,
+  determinístico e barato). Três params novos cortam o estouro de tokens em arquivos gigantes
+  (antes: a árvore achatada embutia `content`+contexto por símbolo → saída de milhares de linhas):
+  `include_content:false` (só `name_path`/`kind`/`at`/`span_lines`), `top_level_only:true` (ignora
+  métodos/aninhados) e `kinds:["Function",…]` (filtra por rótulo, case-insensitive). Juntos dão um
+  ranking de "god function" barato e parser-correto — sem hand-roll de contador de chaves (que erra
+  em string/comentário/macro). `include_content` default `true` → compatível com o uso atual (`span_lines`
+  é aditivo). Teste e2e versionado: `mcp/test-document-symbols-metrics.jsonl`.
+- **`move_symbol`: suporte a Rust (WorkspaceEdit à mão).** O rust-analyzer **não implementa** "mover
+  para novo arquivo" (não há code action) → antes a tool devolvia `move_no_op` em Rust. Agora, em vez
+  de fingir/desistir, a camada **monta o edit à mão** (mesmo padrão do `change_signature` onde nenhum
+  LS oferece o refactor) e o passa pelo **mesmo núcleo `verify_and_apply` (C1)**: recorta a decl
+  top-level da origem (expandindo sobre `#[attr]`/`///` contíguos), **cria o arquivo `to_file`** (decl +
+  os `use` herdados da origem + um glob `use <mod_origem>::*;` p/ itens do mesmo módulo), **registra o
+  módulo** novo no módulo pai (`pub mod <stem>;` em mod.rs/lib.rs/`<dir>.rs`) e deixa um **re-export**
+  na origem (`pub use <destino>::<nome>;`) para que os importers (`crate::origem::nome`) continuem
+  resolvendo **sem reescrever call-site nenhum**. Em Rust o gate autoritativo é o **build** (o
+  net_delta em memória do rust-analyzer resolve o módulo novo via overlay, mas o `cargo check` é a
+  prova) → `verify_build` é **default `true`** e **reverte** se o build quebrar. `to_file` é
+  obrigatório em Rust e deve ser **novo** (p/ arquivo já existente: `insert_after_symbol` +
+  `safe_delete`); destino existente → `unsupported`/`dest_exists` com a receita. Verificado na fixture
+  `rust-demo` (mover `make_account` → `src/accounts.rs`: `cargo check` verde com os ~20 importers
+  intactos via re-export). Schema/descrição da tool atualizados; testes: unit (`rust_mod_path`,
+  `expand_up_over_attrs`, `collect_use_statements`) + e2e `mcp/test-move-symbol-rust.jsonl`.
+
 ## [0.10.0] - 2026-11-08
 
 > Fecha uma fraqueza de roteamento observada em campo: um subagente contornava a camada semântica
@@ -566,7 +602,8 @@ Endurecimento proativo a partir da varredura de concorrentes (`docs/COMPETITOR-I
   `find_symbol`, `workspace_symbols`, `call_hierarchy`), `rename_symbol`, `extract_function`,
   `move_symbol`.
 
-[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/CenturyBoys/ide_cc/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/CenturyBoys/ide_cc/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CenturyBoys/ide_cc/compare/v0.8.2...v0.9.0

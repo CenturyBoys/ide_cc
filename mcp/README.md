@@ -29,12 +29,12 @@ o vtsls é push-based. A camada detecta o modo pela capability do `initialize`.
 |---|---|---|---|
 | `find_references` | tsgo | `textDocument/references` | referências semânticas + gate de warmup |
 | `rename_symbol` | tsgo | `rename` + diagnostics | rename com apply→verify (`net_delta`) |
-| `document_symbols` | tsgo | `documentSymbol` | árvore de símbolos (classes → métodos) |
+| `document_symbols` | tsgo | `documentSymbol` | árvore de símbolos (classes → métodos) + `span_lines`; modo métrica (`include_content:false`/`top_level_only`/`kinds`) p/ ranking de "god function" |
 | `find_symbol` | tsgo | `documentSymbol` | acha símbolo por name_path, posição exata |
 | `workspace_symbols` | tsgo | `workspace/symbol` | busca símbolo no projeto inteiro |
 | `call_hierarchy` | tsgo | `prepareCallHierarchy`+`incomingCalls` | quem chama este símbolo |
 | `extract_function` | **vtsls** | `codeAction`+`resolve` | extrai linhas p/ nova função + apply→verify |
-| `move_symbol` | **vtsls** | `codeAction`+`resolve` | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify |
+| `move_symbol` | **vtsls** / hand-built (Rust) | `codeAction`+`resolve` / edit à mão | move símbolo p/ novo arquivo (cria + atualiza imports) + apply→verify. Em **Rust** (rust-analyzer não oferece o refactor) monta o edit à mão: recorta + cria `to_file` + `pub mod` no pai + re-export na origem; gate = `cargo check` (verify_build default true) |
 | `validate_build` | build da linguagem | `cargo check`/`dart analyze`/`dotnet build`… | roda o build NO DISCO e reporta erros (2ª camada de segurança) |
 | `doctor` | — | checagem de setup | verifica LSP disponível + config de workspace por linguagem; `fix=true` corrige (ex.: cria `pyrightconfig.json`); sonda contagem de refs e config incompleta (avisos no campo `warnings`) |
 | `organize_imports` | **vtsls**/backend | `source.organizeImports` | organiza imports (preserva side-effect + type-only usado) + apply→verify |
@@ -65,7 +65,7 @@ mantendo **um processo por (projeto × backend)**, tudo persistente:
 | TypeScript (`.ts/.tsx/.js`) | **tsgo** (rápido, não trunca) | **vtsls** (tsgo não implementa refactorings) |
 | Python (`.py`) | **basedpyright** | basedpyright |
 | Dart (`.dart`) | **dart language-server** (não trunca) | dart |
-| Rust (`.rs`) | **rust-analyzer** (cold ~30s, trunca; gate 60s) | rust-analyzer |
+| Rust (`.rs`) | **rust-analyzer** (cold ~30s, trunca; gate 60s) | rust-analyzer; `move_symbol` é **hand-built** (o rust-analyzer não implementa move-to-file) |
 | C# (`.cs`) | **csharp-ls** (Roslyn; cold ~24s, não trunca) | csharp-ls |
 
 Adicionar uma linguagem = um backend novo + um match em `nav_backend`/`refactor_backend`.
