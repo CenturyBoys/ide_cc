@@ -7,7 +7,7 @@ use lsp::{path_to_uri, uri_to_path, LspClient};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -2337,6 +2337,12 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
     let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
+    // Rust: o rust-analyzer não oferece "mover para novo arquivo" (code action inexistente) → a camada
+    // monta o WorkspaceEdit À MÃO (recorte + arquivo novo + registro de módulo + re-export) e passa pelo
+    // MESMO núcleo verify_and_apply (C1). Ver move_symbol_rust.
+    if file.ends_with(".rs") {
+        return move_symbol_rust(srv, a);
+    }
     let line = a["line"].as_u64();
     let apply = a["apply"].as_bool().unwrap_or(false);
     let backend = refactor_backend(file);
@@ -2392,6 +2398,230 @@ fn tool_move_symbol(srv: &Server, a: &Value) -> Result<Value, String> {
     )?;
     result["operation"] = json!("move_symbol");
     result["symbol"] = json!(symbol);
+    Ok(result)
+}
+
+// --- move_symbol em Rust (WorkspaceEdit à mão) ---------------------------
+// O rust-analyzer NÃO implementa "mover para novo arquivo" (não há code action) → em vez de devolver
+// no-op, a camada monta o edit à mão (como change_signature faz onde nenhum LS oferece o refactor) e o
+// passa pelo MESMO verify_and_apply (C1): recorta a decl top-level da origem, cria o arquivo destino com
+// a decl + os `use` herdados da origem + um glob do módulo de origem (p/ itens do mesmo módulo, ex.: um
+// tipo que a função usa), registra o módulo novo no módulo pai (`pub mod <stem>;`) e deixa um RE-EXPORT
+// na origem (`pub use <destino>::<nome>;`) para que os importers (`crate::origem::nome`) continuem
+// resolvendo sem reescrever call-site nenhum. Em Rust o GATE real é o build (cargo check) — o net_delta
+// em memória do rust-analyzer não enxerga o registro de módulo novo com confiança —, então verify_build
+// é default TRUE aqui: aplica e REVERTE se o cargo check quebrar.
+
+// Sobe a partir de `sl` sobre linhas contíguas de atributo (`#[...]`) / doc-comment (`///`, `//!`) — o
+// `range` do documentSymbol às vezes começa na assinatura, deixando os atributos pra trás no recorte.
+fn expand_up_over_attrs(lines: &[&str], sl: u64) -> u64 {
+    let mut start = sl;
+    while start > 0 {
+        let prev = lines
+            .get((start - 1) as usize)
+            .map(|s| s.trim_start())
+            .unwrap_or("");
+        if prev.starts_with("#[")
+            || prev.starts_with("#![")
+            || prev.starts_with("///")
+            || prev.starts_with("//!")
+        {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    start
+}
+
+// Raiz `src` do crate que contém `file_abs` (o ancestral `src` cujo pai tem Cargo.toml). None se não
+// achar (ex.: arquivo fora de um layout cargo padrão).
+fn crate_src_root(file_abs: &Path) -> Option<PathBuf> {
+    let mut cur = file_abs.parent();
+    while let Some(dir) = cur {
+        if dir.file_name().and_then(|s| s.to_str()) == Some("src")
+            && dir
+                .parent()
+                .map(|p| p.join("Cargo.toml").exists())
+                .unwrap_or(false)
+        {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+// Caminho de módulo crate-relativo (`crate::a::b`) de um arquivo .rs, dado a raiz `src`. lib.rs/main.rs
+// e `mod.rs` colapsam no módulo pai. None se o arquivo não estiver sob `src_root`.
+fn rust_mod_path(src_root: &Path, file_abs: &Path) -> Option<String> {
+    let rel = file_abs.strip_prefix(src_root).ok()?;
+    let mut segs: Vec<String> = vec![];
+    for comp in rel.components() {
+        segs.push(comp.as_os_str().to_str()?.to_string());
+    }
+    if let Some(last) = segs.last_mut() {
+        *last = last.trim_end_matches(".rs").to_string();
+    }
+    segs.retain(|s| s != "mod" && s != "lib" && s != "main");
+    let mut path = String::from("crate");
+    for s in &segs {
+        path.push_str("::");
+        path.push_str(s);
+    }
+    Some(path)
+}
+
+// Arquivo do módulo PAI onde registrar `mod <dest_stem>;`: mod.rs do diretório, senão lib.rs/main.rs se
+// o diretório é a raiz src, senão o irmão `<dir>.rs` (layout 2018). None se nenhum existir.
+fn parent_mod_file(src_root: &Path, dst_abs: &Path) -> Option<PathBuf> {
+    let dir = dst_abs.parent()?;
+    let modrs = dir.join("mod.rs");
+    if modrs.exists() {
+        return Some(modrs);
+    }
+    if dir == src_root {
+        for name in ["lib.rs", "main.rs"] {
+            let p = dir.join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        return None;
+    }
+    let sibling = dir.with_extension("rs"); // src/a -> src/a.rs
+    sibling.exists().then_some(sibling)
+}
+
+// Coleta os statements `use ...;` / `pub use ...;` do arquivo (multi-linha com `{` são juntados até o
+// `;`). Over-inclusivo de propósito: duplicar um import gera só warning, não erro — e o build gate pega
+// qualquer conflito real.
+fn collect_use_statements(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut buf: Option<String> = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if buf.is_none() && (t.starts_with("use ") || t.starts_with("pub use ")) {
+            buf = Some(line.to_string());
+        } else if let Some(b) = buf.as_mut() {
+            b.push('\n');
+            b.push_str(line);
+        }
+        if buf.as_ref().map(|b| b.contains(';')).unwrap_or(false) {
+            out.push(buf.take().unwrap());
+        }
+    }
+    out
+}
+
+fn move_symbol_rust(srv: &Server, a: &Value) -> Result<Value, String> {
+    let project = a["project"].as_str().ok_or("faltou 'project'")?;
+    let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    let symbol = a["symbol"].as_str().ok_or("faltou 'symbol'")?;
+    let to_file = a["to_file"]
+        .as_str()
+        .ok_or("faltou 'to_file' (caminho relativo do arquivo NOVO destino do move em Rust)")?;
+    let line = a["line"].as_u64();
+    let apply = a["apply"].as_bool().unwrap_or(false);
+    // Em Rust o gate autoritativo é o build (net_delta em memória não vê o módulo novo) → default TRUE.
+    let verify_build = a["verify_build"].as_bool().unwrap_or(true);
+
+    let backend = refactor_backend(file); // rust-analyzer
+    let client = srv.client(project, backend)?;
+    let src_abs = safe_abs(project, file)?;
+    let dst_abs_s = safe_abs(project, to_file)?;
+    let dst_abs = Path::new(&dst_abs_s);
+    client.ensure_open(&src_abs)?;
+
+    // Destino deve ser NOVO. Para arquivo existente: insert_after_symbol (colar) + safe_delete (origem).
+    if dst_abs.exists() {
+        return Ok(json!({
+            "operation":"move_symbol","symbol":symbol,"applied":false,"safe":false,
+            "unsupported":true,"error":"dest_exists",
+            "detail":format!("destino '{to_file}' já existe — move_symbol em Rust move para um arquivo NOVO. Para um arquivo já existente: insert_after_symbol (colar a decl) + safe_delete (remover a origem), ambos com verify_build:true.")
+        }));
+    }
+
+    // 1) range COMPLETO da decl + expansão sobre attrs/doc-comments contíguos.
+    let (l, _c) = resolve_pos(&client, &src_abs, symbol, line)?;
+    let ((sl, _), (el, _ec)) = find_decl_range(&client, &src_abs, symbol, l)?;
+    let src_text = std::fs::read_to_string(&src_abs).map_err(|e| format!("ler {src_abs}: {e}"))?;
+    let src_lines: Vec<&str> = src_text.split('\n').collect();
+    let start_line = expand_up_over_attrs(&src_lines, sl);
+
+    // texto movido = linhas [start_line ..= el] inteiras (sem a newline final).
+    let cut_start = pos_to_offset(&src_text, start_line, 0);
+    let cut_end = pos_to_offset(&src_text, el + 1, 0);
+    let moved = src_text[cut_start..cut_end]
+        .trim_end_matches('\n')
+        .to_string();
+
+    // 2) caminhos de módulo (crate-relativos) de origem e destino.
+    let src_root = crate_src_root(Path::new(&src_abs)).ok_or_else(|| {
+        format!("não encontrei a raiz `src` do crate a partir de {file} (layout cargo esperado: <crate>/src/...)")
+    })?;
+    let src_mod = rust_mod_path(&src_root, Path::new(&src_abs))
+        .ok_or("não consegui derivar o caminho de módulo da origem")?;
+    let dst_mod = rust_mod_path(&src_root, dst_abs).ok_or_else(|| {
+        format!("destino '{to_file}' fora de `src` do crate — move_symbol em Rust registra o módulo no crate atual")
+    })?;
+    let item = base_name(symbol.rsplit('/').next().unwrap_or(symbol));
+
+    // 3) módulo pai onde registrar `pub mod <stem>;`.
+    let dst_stem = dst_abs
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("destino sem nome de arquivo válido")?
+        .to_string();
+    let parent_file = parent_mod_file(&src_root, dst_abs).ok_or_else(|| {
+        format!("não achei o arquivo do módulo pai pra registrar `mod {dst_stem};` (crie mod.rs/lib.rs do diretório destino, ou mova para um arquivo cujo diretório já seja um módulo)")
+    })?;
+
+    // 4) conteúdo do arquivo destino: use herdados da origem + glob do módulo de origem + a decl.
+    let mut dst_content = String::new();
+    for u in collect_use_statements(&src_text) {
+        dst_content.push_str(&u);
+        dst_content.push('\n');
+    }
+    dst_content.push_str(&format!("use {src_mod}::*;\n\n"));
+    dst_content.push_str(&moved);
+    dst_content.push('\n');
+
+    // 5) monta o WorkspaceEdit (documentChanges) agregando por arquivo (origem==pai é possível).
+    let src_uri = path_to_uri(&src_abs);
+    let dst_uri = path_to_uri(&dst_abs_s);
+    let parent_uri = path_to_uri(parent_file.to_str().unwrap_or_default());
+    let reexport = format!("pub use {dst_mod}::{item};\n");
+    let mod_decl = format!("pub mod {dst_stem};\n");
+
+    let mut per_file: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+    // origem: apaga a decl + insere o re-export no topo.
+    per_file.entry(src_uri.clone()).or_default().extend([
+        json!({"range":{"start":{"line":start_line,"character":0},"end":{"line":el+1,"character":0}},"newText":""}),
+        json!({"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":reexport}),
+    ]);
+    // módulo pai: registra o mod (se for o mesmo arquivo da origem, só agrega mais um edit no topo).
+    per_file.entry(parent_uri).or_default().push(
+        json!({"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":mod_decl}),
+    );
+    // destino (arquivo novo): insere o conteúdo.
+    per_file.entry(dst_uri.clone()).or_default().push(
+        json!({"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":dst_content}),
+    );
+
+    let mut document_changes = vec![json!({"kind":"create","uri":dst_uri})];
+    for (uri, edits) in per_file {
+        document_changes.push(json!({"textDocument":{"uri":uri},"edits":edits}));
+    }
+    let edit = json!({"documentChanges": document_changes});
+
+    let mut result = verify_and_apply(&client, &edit, apply, verify_build, project, "rust")?;
+    result["operation"] = json!("move_symbol");
+    result["symbol"] = json!(symbol);
+    result["moved_to"] = json!(to_file);
+    result["reexport"] = json!(format!("pub use {dst_mod}::{item};"));
+    result["module_registered"] = json!(format!("pub mod {dst_stem};"));
+    result["backend"] = json!("hand-built (rust-analyzer não implementa move-to-file)");
     Ok(result)
 }
 
@@ -4814,15 +5044,16 @@ fn tools_schema() -> Value {
         },
         {
             "name": "move_symbol",
-            "description": "Move um símbolo (top-level) para um NOVO arquivo, via o refactoring do language server, atualizando os imports. Mesmo ciclo apply→verify com net_delta (cria arquivo). Confiável hoje em TypeScript (vtsls); se o backend não implementar 'mover para novo arquivo' (ex.: csharp-ls), retorna unsupported/move_no_op em vez de fingir sucesso. 'symbol' aceita name_path.",
+            "description": "Move um símbolo (top-level) para um NOVO arquivo, atualizando os imports. TypeScript (vtsls): via o refactoring nativo do language server — o destino é escolhido pelo server (não passe to_file). RUST: o rust-analyzer NÃO implementa 'mover para novo arquivo', então a camada monta o edit À MÃO — recorta a decl, cria o arquivo 'to_file' (OBRIGATÓRIO em Rust; deve ser NOVO), registra o módulo (`pub mod`) no módulo pai e deixa um RE-EXPORT (`pub use`) na origem p/ os importers continuarem resolvendo sem reescrever call-sites. Mesmo ciclo apply→verify com net_delta; em Rust o gate autoritativo é o BUILD (cargo check) — verify_build é default TRUE e REVERTE se o build quebrar (p/ arquivo Rust já existente use insert_after_symbol + safe_delete). Se o backend não oferecer o move (ex.: csharp-ls), retorna unsupported/move_no_op em vez de fingir sucesso. 'symbol' aceita name_path.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string"}, "file": {"type": "string"},
                     "symbol": {"type": "string"},
+                    "to_file": {"type": "string", "description": "destino. OBRIGATÓRIO em Rust (caminho relativo de um arquivo NOVO, no mesmo crate); ignorado em TypeScript (o server escolhe o arquivo novo)"},
                     "line": {"type": "integer", "description": "opcional: linha 1-indexed"},
                     "apply": {"type": "boolean"},
-                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar"}
+                    "verify_build": {"type": "boolean", "description": "com apply=true: roda o build e reverte se falhar. Em Rust é default TRUE (o net_delta em memória não vê o módulo novo)"}
                 },
                 "required": ["project", "file", "symbol"]
             }
@@ -5927,6 +6158,57 @@ mod tests {
         );
         // trailing comma não vira item vazio
         assert_eq!(split_top_level("a, b,"), vec!["a", " b"]);
+    }
+
+    // move_symbol Rust: rust_mod_path colapsa lib/main/mod e deriva caminho crate-relativo.
+    #[test]
+    fn rust_mod_path_collapses_and_nests() {
+        let root = Path::new("/p/src");
+        assert_eq!(
+            rust_mod_path(root, Path::new("/p/src/models.rs")).as_deref(),
+            Some("crate::models")
+        );
+        assert_eq!(
+            rust_mod_path(root, Path::new("/p/src/a/b.rs")).as_deref(),
+            Some("crate::a::b")
+        );
+        // mod.rs colapsa no módulo do diretório
+        assert_eq!(
+            rust_mod_path(root, Path::new("/p/src/a/mod.rs")).as_deref(),
+            Some("crate::a")
+        );
+        // lib.rs/main.rs = raiz do crate
+        assert_eq!(
+            rust_mod_path(root, Path::new("/p/src/lib.rs")).as_deref(),
+            Some("crate")
+        );
+        // fora de src_root → None
+        assert_eq!(rust_mod_path(root, Path::new("/other/x.rs")), None);
+    }
+
+    // expand_up_over_attrs sobe sobre #[...] e ///, para em linha de código/branco.
+    #[test]
+    fn expand_up_over_attrs_covers_attrs_and_docs() {
+        let lines = vec![
+            "fn other() {}",    // 0
+            "",                 // 1 (branco, barra a subida)
+            "/// doc",          // 2
+            "#[inline]",        // 3
+            "pub fn alvo() {}", // 4 (decl)
+        ];
+        assert_eq!(expand_up_over_attrs(&lines, 4), 2); // sobe sobre #[inline] e /// até a branca
+        assert_eq!(expand_up_over_attrs(&lines, 0), 0); // nada acima
+    }
+
+    // collect_use_statements pega use single-line e multi-line (até o ';').
+    #[test]
+    fn collect_use_statements_single_and_multiline() {
+        let src = "use std::fmt;\npub use crate::a::B;\nuse crate::x::{\n    Y,\n    Z,\n};\n\nfn f() {}\n";
+        let uses = collect_use_statements(src);
+        assert_eq!(uses.len(), 3);
+        assert_eq!(uses[0], "use std::fmt;");
+        assert_eq!(uses[1], "pub use crate::a::B;");
+        assert!(uses[2].starts_with("use crate::x::{") && uses[2].ends_with("};"));
     }
 
     // F5: paren_span acha o conteúdo entre os parênteses balanceados após o identificador.
