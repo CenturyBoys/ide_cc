@@ -1,0 +1,18 @@
+# move_symbol em RUST (WorkspaceEdit à mão): o rust-analyzer NÃO implementa "mover para novo arquivo",
+# então a camada recorta a decl, cria o arquivo novo (decl + use herdados + glob do módulo de origem),
+# registra `pub mod <stem>;` no módulo pai e deixa `pub use <destino>::<nome>;` na origem. O gate é o
+# BUILD (cargo check) — verify_build default true; reverte se quebrar.
+# Requer: rust-analyzer + cargo no PATH. Resete a fixture antes: bash benchmarks/scripts/setup-fixtures.sh
+#   ./target/release/code-intel-mcp < test-move-symbol-rust.jsonl
+# id2: PREVIEW (apply=false) move make_account (src/models.rs) -> src/accounts.rs (NOVO). Espera:
+#      net_delta 0, safe:true, creates:["src/accounts.rs"], reexport "pub use crate::accounts::make_account;",
+#      module_registered "pub mod accounts;", 4 edits em 3 arquivos. NÃO toca o disco.
+# id3: dest_exists — to_file já existe (src/svc_00.rs) -> unsupported/dest_exists (não move). NÃO toca o disco.
+# id4: APPLY (apply=true, verify_build=true) -> applied:true, build_ok:true. Os ~20 importers de
+#      `crate::models::make_account` seguem resolvendo via o re-export (cargo check verde).
+#      MUTA a fixture (cria src/accounts.rs): rode por último e resete depois.
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"move_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"make_account","to_file":"src/accounts.rs","apply":false}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"move_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"make_account","to_file":"src/svc_00.rs","apply":false}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"move_symbol","arguments":{"project":"/home/ximit/Projects/ide_cc/fixtures/rust-demo","file":"src/models.rs","symbol":"make_account","to_file":"src/accounts.rs","apply":true,"verify_build":true}}}
