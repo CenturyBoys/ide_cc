@@ -7,6 +7,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Added
+- **`document_symbols`: modo métrica (span + filtros).** Cada símbolo agora traz `span_lines` — o
+  tamanho da declaração em linhas, derivado do range COMPLETO (via `flatten_ranges`/`sym_full_range`,
+  determinístico e barato). Três params novos cortam o estouro de tokens em arquivos gigantes
+  (antes: a árvore achatada embutia `content`+contexto por símbolo → saída de milhares de linhas):
+  `include_content:false` (só `name_path`/`kind`/`at`/`span_lines`), `top_level_only:true` (ignora
+  métodos/aninhados) e `kinds:["Function",…]` (filtra por rótulo, case-insensitive). Juntos dão um
+  ranking de "god function" barato e parser-correto — sem hand-roll de contador de chaves (que erra
+  em string/comentário/macro). `include_content` default `true` → compatível com o uso atual (`span_lines`
+  é aditivo). Teste e2e versionado: `mcp/test-document-symbols-metrics.jsonl`.
 - **`move_symbol`: suporte a Rust (WorkspaceEdit à mão).** O rust-analyzer **não implementa** "mover
   para novo arquivo" (não há code action) → antes a tool devolvia `move_no_op` em Rust. Agora, em vez
   de fingir/desistir, a camada **monta o edit à mão** (mesmo padrão do `change_signature` onde nenhum
