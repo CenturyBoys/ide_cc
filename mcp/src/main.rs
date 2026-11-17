@@ -3535,11 +3535,28 @@ fn filter_edit_to_existing(edit: &Value, drop_abs: &str) -> Value {
 fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let project = a["project"].as_str().ok_or("faltou 'project'")?;
     let file = a["file"].as_str().ok_or("faltou 'file'")?;
+    // Modo métrica: `include_content:false` omite content/context (é o que estoura o budget de tokens
+    // em arquivos gigantes — cada símbolo embute a assinatura+contexto). `top_level_only` restringe
+    // aos símbolos de topo (sem '/' no name_path). `kinds` filtra por rótulo (Function/Method/Struct…,
+    // case-insensitive). `span_lines` (tamanho da decl em linhas, do range COMPLETO) vem SEMPRE —
+    // número determinístico e barato pra métricas tipo "god function" (ordene por ele no consumidor).
+    let include_content = a["include_content"].as_bool().unwrap_or(true);
+    let top_level_only = a["top_level_only"].as_bool().unwrap_or(false);
+    let kinds_filter: Option<Vec<String>> = a["kinds"].as_array().map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .collect()
+    });
     let client = srv.client(project, nav_backend(file))?;
     let abs = safe_abs(project, file)?;
     let syms = document_symbols(&client, &abs)?;
     let mut flat = vec![];
     flatten_symbols(&syms, "", &mut flat);
+    // flatten_ranges tem a MESMA ordem de travessia de flatten_symbols → casa por índice (robusto a
+    // homônimos). Dá o range COMPLETO da decl p/ o span.
+    let mut ranges = vec![];
+    flatten_ranges(&syms, "", &mut ranges);
     // Alinha o `at` ao token do identificador (pula decorators), como o workspace_symbols já faz.
     let txt = std::fs::read_to_string(&abs).unwrap_or_default();
     let flines: Vec<&str> = txt.split('\n').collect();
@@ -3549,13 +3566,34 @@ fn tool_document_symbols(srv: &Server, a: &Value) -> Result<Value, String> {
     let mut cache = SourceCache::default();
     let list: Vec<Value> = flat
         .into_iter()
-        .map(|(fp, k, l, c)| {
+        .enumerate()
+        .filter_map(|(i, (fp, k, l, c))| {
+            if top_level_only && fp.contains('/') {
+                return None;
+            }
             let (rl, rc) = refine_at(&flines, &fp, l, c);
-            let mut loc = format_location(&mut cache, &root, &abs, rl, rc);
-            // `at` local (só linha:col) para não repetir o path do arquivo já informado no topo.
-            loc["at"] = json!(format!("{}:{}", rl + 1, rc + 1));
-            json!({"name_path": fp, "kind": kind_label(k, &flines, rl),
-                   "at": loc["at"].clone(), "content": loc["content"].clone(), "context": loc["context"].clone()})
+            let label = kind_label(k, &flines, rl);
+            if let Some(ref kf) = kinds_filter {
+                let ll = label.to_lowercase();
+                if !kf.iter().any(|w| *w == ll) {
+                    return None;
+                }
+            }
+            // span = linhas que a declaração ocupa (inclusive), do range COMPLETO (flatten_ranges).
+            let span = ranges
+                .get(i)
+                .map(|(_, ((sl, _), (el, _)))| el.saturating_sub(*sl) + 1);
+            let mut obj = json!({"name_path": fp, "kind": label,
+                                 "at": format!("{}:{}", rl + 1, rc + 1)});
+            if let Some(span) = span {
+                obj["span_lines"] = json!(span);
+            }
+            if include_content {
+                let loc = format_location(&mut cache, &root, &abs, rl, rc);
+                obj["content"] = loc["content"].clone();
+                obj["context"] = loc["context"].clone();
+            }
+            Some(obj)
         })
         .collect();
     Ok(json!({"file": file, "count": list.len(), "symbols": list}))
@@ -4750,10 +4788,15 @@ fn tools_schema() -> Value {
         },
         {
             "name": "document_symbols",
-            "description": "Árvore de símbolos de um arquivo (classes → métodos/propriedades), com name_path e posição. Base para 'achar método dentro de classe'.",
+            "description": "Árvore de símbolos de um arquivo (classes → métodos/propriedades), com name_path, posição e span_lines (tamanho da decl em linhas). Base para 'achar método dentro de classe'. MODO MÉTRICA p/ arquivos gigantes: use include_content:false (omite o código embutido — é o que estoura o budget de tokens) + top_level_only:true + kinds:[\"Function\"] pra um ranking barato e determinístico de 'god function' (ordene por span_lines no resultado).",
             "inputSchema": {
                 "type": "object",
-                "properties": {"project": {"type": "string"}, "file": {"type": "string"}},
+                "properties": {
+                    "project": {"type": "string"}, "file": {"type": "string"},
+                    "include_content": {"type": "boolean", "description": "default true: cada símbolo traz content+context (a assinatura). false = só name_path/kind/at/span_lines (saída enxuta p/ métrica, não estoura tokens em arquivos grandes)"},
+                    "top_level_only": {"type": "boolean", "description": "default false: true devolve só símbolos de topo (sem '/' no name_path), ignorando métodos/aninhados"},
+                    "kinds": {"type": "array", "items": {"type": "string"}, "description": "filtra por rótulo (case-insensitive): 'Function','Method','Struct','Class','Enum','Interface','Constant','Variable','Property','Field','Namespace'…"}
+                },
                 "required": ["project", "file"]
             }
         },
